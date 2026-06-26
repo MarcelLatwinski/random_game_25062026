@@ -14,6 +14,13 @@ from settings import (
     PLAYER_MAX_HEALTH,
     PLAYER_START_HEALTH,
     HURT_INVINCIBILITY,
+    MAGAZINE_SIZE,
+    STARTING_MAG_AMMO,
+    STARTING_RESERVE_AMMO,
+    MAX_RESERVE_AMMO,
+    RELOAD_DURATION,
+    RELOAD_PROMPT_DURATION,
+    RELOAD_PROMPT_RISE,
     COLOR_PLAYER,
     COLOR_HURT,
 )
@@ -41,22 +48,42 @@ class Player:
         self.hurt_timer = 0
         self.hurt_cooldown = HURT_INVINCIBILITY
         self.next_fire = 0
+        self.magazine_size = MAGAZINE_SIZE
+        self.current_ammo_in_gun = STARTING_MAG_AMMO
+        self.reserve_ammo = STARTING_RESERVE_AMMO
+        self.max_reserve_ammo = MAX_RESERVE_AMMO
+        self.reload_until = 0
+        self.reload_prompt_age = None
         self.color = COLOR_PLAYER
 
     @property
     def damage(self):
         return int(PLAYER_BASE_DAMAGE * self.damage_multiplier)
 
+    def is_reloading(self, now):
+        return now < self.reload_until
+
     def can_shoot(self, now):
-        return now >= self.next_fire
+        return (
+            now >= self.next_fire
+            and not self.is_reloading(now)
+            and self.current_ammo_in_gun > 0
+        )
 
     def shoot(self, target_pos, now):
+        if self.current_ammo_in_gun <= 0:
+            self.show_reload_prompt()
+            return None
+        if not self.can_shoot(now):
+            return None
+
         dx = target_pos[0] - self.rect.centerx
         dy = target_pos[1] - self.rect.centery
         dist = (dx ** 2 + dy ** 2) ** 0.5
         if dist <= 0:
             return None
         direction = (dx / dist, dy / dist)
+        self.current_ammo_in_gun -= 1
         self.next_fire = now + self.fire_cooldown
         self.play_action("shoot")
         return Bullet(
@@ -67,6 +94,38 @@ class Player:
             image=self.bullet_image,
             animations=self.bullet_animations,
         )
+
+    def reload(self, now):
+        missing_ammo = self.magazine_size - self.current_ammo_in_gun
+        if missing_ammo <= 0 or self.reserve_ammo <= 0:
+            return False
+
+        ammo_to_load = min(missing_ammo, self.reserve_ammo)
+        self.current_ammo_in_gun += ammo_to_load
+        self.reserve_ammo -= ammo_to_load
+        self.reload_until = now + RELOAD_DURATION
+        return True
+
+    def show_reload_prompt(self):
+        self.reload_prompt_age = 0.0
+
+    def update_reload_prompt(self, dt):
+        if self.reload_prompt_age is None:
+            return
+
+        self.reload_prompt_age += dt
+        if self.reload_prompt_age >= RELOAD_PROMPT_DURATION:
+            self.reload_prompt_age = None
+
+    def add_reserve_ammo(self, amount):
+        old_reserve = self.reserve_ammo
+        self.reserve_ammo = min(self.max_reserve_ammo, self.reserve_ammo + amount)
+        return self.reserve_ammo - old_reserve
+
+    def heal(self, amount):
+        old_health = self.health
+        self.health = min(self.max_health, self.health + amount)
+        return self.health - old_health
 
     def apply_upgrade(self, effect_id):
         if effect_id == "bigger_heart":
@@ -124,6 +183,7 @@ class Player:
             self.rect.right = world_width
 
         self.update_animation(dt)
+        self.update_reload_prompt(dt)
 
     def play_action(self, state):
         if self.animator:
@@ -174,3 +234,18 @@ class Player:
             if self.hurt_timer > pygame.time.get_ticks() / 1000:
                 color = COLOR_HURT
             pygame.draw.rect(surface, color, draw_rect)
+        self.draw_reload_prompt(surface, draw_rect)
+
+    def draw_reload_prompt(self, surface, draw_rect):
+        if self.reload_prompt_age is None:
+            return
+
+        progress = min(1.0, self.reload_prompt_age / RELOAD_PROMPT_DURATION)
+        alpha = max(0, int(255 * (1.0 - progress)))
+        rise = int(RELOAD_PROMPT_RISE * progress)
+        font = pygame.font.SysFont("Segoe UI", 28, bold=True)
+        text_surface = font.render("RELOAD", True, (255, 50, 50))
+        text_surface.set_alpha(alpha)
+        text_x = draw_rect.centerx - text_surface.get_width() // 2
+        text_y = draw_rect.top - 24 - rise
+        surface.blit(text_surface, (text_x, text_y))

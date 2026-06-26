@@ -36,7 +36,15 @@ class UI:
         pygame.draw.rect(surface, COLOR_HEALTH, (x, y, fill_width, bar_height))
         pygame.draw.rect(surface, COLOR_TEXT, (x, y, bar_width, bar_height), 4)
         self.draw_text(surface, f"HP: {player.health}/{player.max_health}", x + 12, y + 6, size=54, bold=True)
+        self.draw_ammo(surface, player, x + bar_width + 34, y + 4)
         self.draw_upgrade_list(surface, player, x, y + bar_height + 24)
+
+    def draw_ammo(self, surface, player, x, y):
+        ammo_text = f"Ammo: {player.current_ammo_in_gun} / {player.reserve_ammo}"
+        self.draw_text(surface, ammo_text, x, y, size=44, bold=True)
+        now = pygame.time.get_ticks() / 1000
+        if player.is_reloading(now):
+            self.draw_text(surface, "Reloading", x, y + 48, size=32, bold=True)
 
     def draw_upgrade_list(self, surface, player, x, y):
         if not getattr(player, "picked_upgrades", None):
@@ -47,6 +55,22 @@ class UI:
 
     def draw_level(self, surface, level_number):
         self.draw_text(surface, f"Level {level_number}/{len(LEVELS)}", SCREEN_WIDTH - 360, 18, size=48, bold=True)
+
+    def draw_fps_counter(self, surface, fps):
+        font = load_font("Segoe UI", 30, bold=True)
+        text_surface = font.render(f"FPS: {fps:.0f}", True, COLOR_TEXT)
+        padding = 10
+        x = SCREEN_WIDTH - text_surface.get_width() - 24
+        y = 76
+        background_rect = pygame.Rect(
+            x - padding,
+            y - 6,
+            text_surface.get_width() + padding * 2,
+            text_surface.get_height() + 12,
+        )
+        pygame.draw.rect(surface, COLOR_UI_BG, background_rect)
+        pygame.draw.rect(surface, COLOR_TEXT, background_rect, 2)
+        surface.blit(text_surface, (x, y))
 
     def draw_main_menu(self, surface):
         surface.fill(COLOR_BACKGROUND)
@@ -85,9 +109,19 @@ class UI:
             bold=True,
         )
 
-    def draw_pause(self, surface):
-        self.draw_text(surface, "Paused", 560, 260, size=48)
-        self.draw_text(surface, "Press Esc to resume", 510, 340, size=28)
+    def draw_pause(self, surface, show_fps_counter=False):
+        panel_width = 620
+        panel_height = 240
+        panel_x = (SCREEN_WIDTH - panel_width) // 2
+        panel_y = 245
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+        pygame.draw.rect(surface, COLOR_UI_BG, panel_rect)
+        pygame.draw.rect(surface, COLOR_TEXT, panel_rect, 4)
+
+        fps_status = "ON" if show_fps_counter else "OFF"
+        self.draw_text(surface, "Paused", panel_x + 32, panel_y + 28, size=48, bold=True)
+        self.draw_text(surface, "Esc: Resume", panel_x + 36, panel_y + 104, size=32, bold=True)
+        self.draw_text(surface, f"F: FPS Counter {fps_status}", panel_x + 36, panel_y + 154, size=32, bold=True)
 
     def draw_game_over(self, surface):
         self.draw_text(surface, "Game Over", 540, 260, size=48)

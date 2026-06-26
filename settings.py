@@ -1,19 +1,30 @@
+from pathlib import Path
+
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 FPS = 60
+SHOW_FPS_COUNTER = True
 
 PLAYER_MAX_HEALTH = 100
 PLAYER_START_HEALTH = 100
-PLAYER_SPEED = 5
-PLAYER_JUMP_STRENGTH = 24
-GRAVITY = 0.8
-MAX_FALL_SPEED = 20
+PLAYER_SPEED = 8
+PLAYER_JUMP_STRENGTH = 30
+GRAVITY = 1.2
+MAX_FALL_SPEED = 30
 PLAYER_BASE_DAMAGE = 10
 PLAYER_FIRE_COOLDOWN = 0.35
-PLAYER_BULLET_SPEED = 12
+PLAYER_BULLET_SPEED = 16
 BULLET_WIDTH = 32
 BULLET_HEIGHT = 12
 HURT_INVINCIBILITY = 0.5
+MAGAZINE_SIZE = 10
+STARTING_TOTAL_AMMO = 50
+STARTING_MAG_AMMO = 10
+STARTING_RESERVE_AMMO = 40
+MAX_RESERVE_AMMO = 60
+RELOAD_DURATION = 0.5
+RELOAD_PROMPT_DURATION = 1.0
+RELOAD_PROMPT_RISE = 42
 CHARACTER_ASSET_SCALE = 1.5
 
 
@@ -25,23 +36,23 @@ PLAYER_WIDTH = scaled_character_size(76)
 PLAYER_HEIGHT = scaled_character_size(76)
 
 WALKER_HP = 40
-WALKER_SPEED = 3.2
+WALKER_SPEED = 4.8
 WALKER_DAMAGE = 10
-WALKER_JUMP_INTERVAL = (2.0, 3.0)
-WALKER_JUMP_STRENGTH = 24
+WALKER_JUMP_INTERVAL = (1.4, 2.2)
+WALKER_JUMP_STRENGTH = 30
 WALKER_WIDTH = scaled_character_size(76)
 WALKER_HEIGHT = scaled_character_size(76)
 
 TANK_HP = 100
-TANK_SPEED = 1.6
+TANK_SPEED = 2.6
 TANK_DAMAGE = 25
-TANK_JUMP_INTERVAL = (3.0, 4.0)
-TANK_JUMP_STRENGTH = 24
+TANK_JUMP_INTERVAL = (2.0, 3.0)
+TANK_JUMP_STRENGTH = 30
 TANK_WIDTH = scaled_character_size(92)
 TANK_HEIGHT = scaled_character_size(92)
 
 FLYING_HP = 30
-FLYING_SPEED = 4.4
+FLYING_SPEED = 6.4
 FLYING_DAMAGE = 8
 FLYING_WIDTH = scaled_character_size(76)
 FLYING_HEIGHT = scaled_character_size(76)
@@ -50,11 +61,59 @@ GROUND_Y = 990
 
 # This is the shared side-scrolling map used by every level.
 # Add more width here if you want a longer left-to-right level.
-LEVEL_WIDTH = 7200
+LEVEL_WIDTH = 9800
+LEVEL_HEIGHT = SCREEN_HEIGHT
 PLAYER_START = (140, GROUND_Y - PLAYER_HEIGHT)
 EXIT_POSITION = (LEVEL_WIDTH - 180, GROUND_Y)
 EXIT_WIDTH = 90
 EXIT_HEIGHT = 170
+
+# The new environment art lives in a separate folder. These helpers find the
+# actual file extension so level data can refer to "background_1" or
+# "platform_3" instead of hard-coding ".png" everywhere.
+ENVIRONMENT_ASSET_DIRS = (
+    "assets/images/background_platforms",
+    "assets/images",
+)
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+BACKGROUND_ASSET_KEYS = (
+    "background_1",
+    "background_2",
+    "background_3",
+    "background_4",
+)
+PLATFORM_ASSET_KEYS = (
+    "platform_1",
+    "platform_2",
+    "platform_3",
+    "platform_4",
+    "platform_5",
+)
+
+
+def find_image_asset(asset_name):
+    for directory in ENVIRONMENT_ASSET_DIRS:
+        for extension in IMAGE_EXTENSIONS:
+            path = Path(directory) / f"{asset_name}{extension}"
+            if path.exists():
+                return str(path)
+    return None
+
+
+ENVIRONMENT_IMAGE_PATHS = {
+    asset_name: find_image_asset(asset_name)
+    for asset_name in BACKGROUND_ASSET_KEYS + PLATFORM_ASSET_KEYS
+}
+
+# Background layers are decorative only. Parallax speed is multiplied by the
+# camera x position: lower values drift slowly in the distance, higher values
+# stay closer to the player and move faster.
+BACKGROUND_LAYERS = [
+    {"image": "background_1", "speed": 0.15},
+    {"image": "background_2", "speed": 0.30},
+    {"image": "background_3", "speed": 0.50},
+    {"image": "background_4", "speed": 0.75},
+]
 
 # Spawn points wake up when they are this far ahead of the player.
 # The points themselves are world positions, so they do not move with the camera.
@@ -65,6 +124,31 @@ ENEMY_SPEED_SCALE_PER_LEVEL = 0.06
 ENEMY_HEALTH_SCALE_PER_LEVEL = 0.10
 GROUND_EMERGENCE_FPS = 8
 GROUND_EMERGENCE_DRAW_OFFSET_Y = 12
+AMMO_PICKUP_AMOUNT = 10
+HEALTH_PICKUP_AMOUNT = 25
+AMMO_DROP_CHANCE = 0.25
+HEALTH_DROP_CHANCE = 0.15
+
+# Pickup sprite source rectangles are adjustable because ammo_health_kit.png
+# stores both pickup sprites in one image with padding around the art.
+PICKUP_SPRITES = {
+    "ammo": {
+        "source_x": 60,
+        "source_y": 295,
+        "source_width": 430,
+        "source_height": 360,
+        "draw_width": 88,
+        "draw_height": 74,
+    },
+    "health": {
+        "source_x": 570,
+        "source_y": 300,
+        "source_width": 390,
+        "source_height": 330,
+        "draw_width": 84,
+        "draw_height": 72,
+    },
+}
 
 # Enemy type config keeps asset names and optional spawn animation data together.
 # To add future spawn animations, add a SPRITE_SHEETS entry for the new sheet,
@@ -91,94 +175,295 @@ ENEMY_TYPE_CONFIGS = {
     },
 }
 
-# Platform layout for the shared level.
-# Each rectangle is (x, y, width, height) in world coordinates.
-# To add a platform, add another rectangle to this list.
-PLATFORMS = [
-    # Safe start and full ground path.
-    (0, GROUND_Y, LEVEL_WIDTH, 90),
+# Section-based level layout for the shared skyscraper level.
+# Move platforms later by editing the x, y, width, and height values below.
+# Add more chunks by appending another section dict with platforms,
+# decorations, enemy_spawns, and pickups.
+def platform(x, y, width, height, sprite, visual_height=None):
+    return {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "sprite": sprite,
+        "visual_height": visual_height,
+        "collidable": True,
+    }
 
-    # Platform/jumping section.
-    (1150, 830, 360, 36),
-    (1650, 690, 360, 36),
-    (2150, 815, 420, 36),
-    (2700, 720, 380, 36),
 
-    # Flying zombie section.
-    (3350, 610, 420, 36),
-    (3900, 790, 380, 36),
+def decoration(kind, x, y, width, height, layer="back"):
+    return {
+        "type": kind,
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "layer": layer,
+        "collidable": False,
+    }
 
-    # Tank and mixed enemy sections.
-    (4650, 760, 500, 36),
-    (5350, 640, 400, 36),
-    (5850, 800, 440, 36),
 
-    # Final horde before the exit.
-    (6350, 720, 340, 36),
+def enemy_spawn(x, y, enemy_type, section, min_level=1, trigger_distance=None, amount=1, spacing=80):
+    return {
+        "x": x,
+        "y": y,
+        "type": enemy_type,
+        "enemyType": enemy_type,
+        "section": section,
+        "min_level": min_level,
+        "trigger_distance": trigger_distance or SPAWN_ACTIVATION_DISTANCE,
+        "amount": amount,
+        "spacing": spacing,
+    }
+
+
+def pickup_spawn(x, y, pickup_type, section, amount=None, min_level=1):
+    return {
+        "x": x,
+        "y": y,
+        "type": pickup_type,
+        "section": section,
+        "amount": amount,
+        "min_level": min_level,
+    }
+
+
+LEVEL_SECTIONS = [
+    {
+        "name": "Ruined Lobby",
+        "start_x": 0,
+        "end_x": 1200,
+        "platforms": [
+            platform(0, GROUND_Y, LEVEL_WIDTH, 90, "platform_4", visual_height=150),
+            platform(360, 875, 280, 36, "platform_1", visual_height=108),
+            platform(740, 835, 320, 36, "platform_2", visual_height=112),
+        ],
+        "decorations": [
+            decoration("broken_floor", 260, 950, 250, 34),
+            decoration("rubble", 560, 930, 210, 60, layer="front"),
+            decoration("broken_desk", 810, 914, 160, 76),
+            decoration("hanging_cable", 980, 620, 18, 250, layer="front"),
+            decoration("cracked_wall", 160, 590, 190, 210),
+        ],
+        "enemy_spawns": [
+            enemy_spawn(1030, GROUND_Y, "walker", "Ruined Lobby", min_level=2),
+        ],
+        "pickups": [
+            pickup_spawn(380, GROUND_Y, "ammo", "Ruined Lobby", amount=AMMO_PICKUP_AMOUNT),
+            pickup_spawn(930, 835, "health", "Ruined Lobby", amount=HEALTH_PICKUP_AMOUNT, min_level=2),
+        ],
+    },
+    {
+        "name": "Open Office",
+        "start_x": 1200,
+        "end_x": 2500,
+        "platforms": [
+            platform(1300, 835, 440, 36, "platform_3", visual_height=120),
+            platform(1840, 790, 430, 36, "platform_1", visual_height=118),
+            platform(2240, 850, 480, 36, "platform_5", visual_height=125),
+        ],
+        "decorations": [
+            decoration("broken_desk", 1340, 914, 180, 76),
+            decoration("broken_desk", 1860, 914, 200, 76),
+            decoration("exposed_beam", 1580, 650, 360, 34),
+            decoration("hanging_cable", 2140, 600, 18, 260, layer="front"),
+            decoration("cracked_wall", 2320, 560, 240, 240),
+        ],
+        "enemy_spawns": [
+            enemy_spawn(1390, GROUND_Y, "walker", "Open Office"),
+            enemy_spawn(1720, GROUND_Y, "walker", "Open Office", min_level=2),
+            enemy_spawn(2100, GROUND_Y, "walker", "Open Office"),
+            enemy_spawn(1510, 835, "walker", "Open Office", min_level=2),
+            enemy_spawn(2360, GROUND_Y, "tank", "Open Office", min_level=4),
+        ],
+        "pickups": [
+            pickup_spawn(1960, GROUND_Y, "ammo", "Open Office", amount=AMMO_PICKUP_AMOUNT),
+        ],
+    },
+    {
+        "name": "Broken Floor",
+        "start_x": 2500,
+        "end_x": 3850,
+        "platforms": [
+            platform(2660, 860, 310, 36, "platform_2", visual_height=118),
+            platform(3030, 770, 300, 36, "platform_3", visual_height=112),
+            platform(3430, 850, 360, 36, "platform_1", visual_height=116),
+            platform(3760, 735, 300, 36, "platform_5", visual_height=120),
+        ],
+        "decorations": [
+            decoration("broken_floor", 2580, 952, 280, 36),
+            decoration("broken_floor", 3160, 952, 320, 36),
+            decoration("rubble", 3490, 932, 260, 58, layer="front"),
+            decoration("cracked_wall", 2820, 560, 260, 260),
+            decoration("hanging_cable", 3610, 570, 16, 270, layer="front"),
+        ],
+        "enemy_spawns": [
+            enemy_spawn(2760, GROUND_Y, "walker", "Broken Floor"),
+            enemy_spawn(3180, 770, "walker", "Broken Floor"),
+            enemy_spawn(3520, GROUND_Y, "walker", "Broken Floor", min_level=2),
+            enemy_spawn(3680, 620, "flying", "Broken Floor", min_level=2),
+        ],
+        "pickups": [
+            pickup_spawn(3140, 770, "ammo", "Broken Floor", amount=AMMO_PICKUP_AMOUNT),
+            pickup_spawn(3820, GROUND_Y, "health", "Broken Floor", amount=HEALTH_PICKUP_AMOUNT),
+        ],
+    },
+    {
+        "name": "Overgrown Interior",
+        "start_x": 3850,
+        "end_x": 5300,
+        "platforms": [
+            platform(4020, 800, 460, 36, "platform_5", visual_height=132),
+            platform(4540, 690, 360, 36, "platform_4", visual_height=130),
+            platform(4970, 820, 500, 36, "platform_2", visual_height=132),
+        ],
+        "decorations": [
+            decoration("vines", 3960, 520, 120, 330, layer="front"),
+            decoration("overgrowth", 4200, 920, 360, 70, layer="front"),
+            decoration("collapsed_structure", 4680, 880, 300, 110),
+            decoration("vines", 4920, 470, 170, 400, layer="front"),
+            decoration("cracked_wall", 5140, 560, 250, 250),
+        ],
+        "enemy_spawns": [
+            enemy_spawn(4160, GROUND_Y, "walker", "Overgrown Interior"),
+            enemy_spawn(4360, 800, "walker", "Overgrown Interior", min_level=2),
+            enemy_spawn(4720, GROUND_Y, "tank", "Overgrown Interior", min_level=3),
+            enemy_spawn(5050, GROUND_Y, "walker", "Overgrown Interior"),
+            enemy_spawn(5170, 590, "flying", "Overgrown Interior", min_level=2),
+        ],
+        "pickups": [
+            pickup_spawn(4680, 690, "ammo", "Overgrown Interior", amount=AMMO_PICKUP_AMOUNT),
+            pickup_spawn(5200, GROUND_Y, "health", "Overgrown Interior", amount=HEALTH_PICKUP_AMOUNT),
+        ],
+    },
+    {
+        "name": "Elevator Shaft",
+        "start_x": 5300,
+        "end_x": 6600,
+        "platforms": [
+            platform(5380, 870, 300, 36, "platform_1", visual_height=116),
+            platform(5750, 760, 280, 36, "platform_3", visual_height=112),
+            platform(5420, 640, 300, 36, "platform_2", visual_height=112),
+            platform(5860, 520, 320, 36, "platform_4", visual_height=120),
+            platform(6250, 700, 350, 36, "platform_5", visual_height=120),
+        ],
+        "decorations": [
+            decoration("elevator_door", 5320, 700, 180, 290),
+            decoration("hanging_cable", 5660, 350, 18, 520, layer="front"),
+            decoration("hanging_cable", 6040, 300, 18, 560, layer="front"),
+            decoration("exposed_beam", 5790, 450, 380, 34),
+            decoration("warning_light", 6370, 610, 44, 44, layer="front"),
+        ],
+        "enemy_spawns": [
+            enemy_spawn(5500, 870, "walker", "Elevator Shaft"),
+            enemy_spawn(5870, 760, "walker", "Elevator Shaft", min_level=2),
+            enemy_spawn(5960, 430, "flying", "Elevator Shaft"),
+            enemy_spawn(6280, 590, "flying", "Elevator Shaft", min_level=2),
+            enemy_spawn(6400, GROUND_Y, "tank", "Elevator Shaft", min_level=3),
+        ],
+        "pickups": [
+            pickup_spawn(5560, 640, "ammo", "Elevator Shaft", amount=AMMO_PICKUP_AMOUNT),
+            pickup_spawn(6400, 700, "health", "Elevator Shaft", amount=HEALTH_PICKUP_AMOUNT),
+        ],
+    },
+    {
+        "name": "Exterior Ledge",
+        "start_x": 6600,
+        "end_x": 8100,
+        "platforms": [
+            platform(6680, 850, 380, 36, "platform_1", visual_height=118),
+            platform(7130, 760, 340, 36, "platform_2", visual_height=112),
+            platform(7520, 850, 390, 36, "platform_3", visual_height=118),
+            platform(7860, 880, 540, 36, "platform_5", visual_height=130),
+        ],
+        "decorations": [
+            decoration("shattered_window", 6660, 530, 280, 320),
+            decoration("exposed_beam", 7040, 650, 420, 30),
+            decoration("hanging_cable", 7380, 520, 18, 300, layer="front"),
+            decoration("broken_floor", 7700, 952, 340, 36),
+            decoration("rubble", 7930, 928, 280, 62, layer="front"),
+        ],
+        "enemy_spawns": [
+            enemy_spawn(6780, 620, "flying", "Exterior Ledge"),
+            enemy_spawn(7240, GROUND_Y, "walker", "Exterior Ledge"),
+            enemy_spawn(7440, 600, "flying", "Exterior Ledge", min_level=2),
+            enemy_spawn(7900, GROUND_Y, "tank", "Exterior Ledge", min_level=2),
+            enemy_spawn(8120, GROUND_Y, "walker", "Exterior Ledge"),
+        ],
+        "pickups": [
+            pickup_spawn(7260, 760, "ammo", "Exterior Ledge", amount=AMMO_PICKUP_AMOUNT),
+            pickup_spawn(8030, GROUND_Y, "health", "Exterior Ledge", amount=HEALTH_PICKUP_AMOUNT, min_level=2),
+        ],
+    },
+    {
+        "name": "Rooftop",
+        "start_x": 8100,
+        "end_x": LEVEL_WIDTH,
+        "platforms": [
+            platform(8340, 810, 430, 36, "platform_4", visual_height=122),
+            platform(8870, 730, 460, 36, "platform_1", visual_height=126),
+            platform(9370, 830, 360, 36, "platform_2", visual_height=118),
+        ],
+        "decorations": [
+            decoration("rooftop_antenna", 8240, 700, 80, 290, layer="front"),
+            decoration("rubble", 8520, 930, 300, 60, layer="front"),
+            decoration("warning_light", 8940, 650, 44, 44, layer="front"),
+            decoration("hanging_cable", 9180, 560, 18, 270, layer="front"),
+            decoration("collapsed_structure", 9400, 890, 300, 100),
+        ],
+        "enemy_spawns": [
+            enemy_spawn(8360, GROUND_Y, "walker", "Rooftop"),
+            enemy_spawn(8560, GROUND_Y, "walker", "Rooftop", amount=2, spacing=95),
+            enemy_spawn(8900, GROUND_Y, "tank", "Rooftop"),
+            enemy_spawn(9100, 600, "flying", "Rooftop"),
+            enemy_spawn(9300, GROUND_Y, "walker", "Rooftop", min_level=2, amount=2, spacing=90),
+            enemy_spawn(9500, GROUND_Y, "tank", "Rooftop", min_level=2),
+            enemy_spawn(9600, 620, "flying", "Rooftop", min_level=3),
+        ],
+        "pickups": [
+            pickup_spawn(8260, GROUND_Y, "ammo", "Rooftop", amount=AMMO_PICKUP_AMOUNT),
+            pickup_spawn(8840, GROUND_Y, "health", "Rooftop", amount=HEALTH_PICKUP_AMOUNT),
+        ],
+    },
 ]
 
-# Zombie spawn points for the shared level.
-# x/y are the zombie's bottom-center world position.
-# For walkers and tanks, use GROUND_Y or the top y of a platform.
-# For flying zombies, use an air y such as 580 or 620.
-# To add a spawn point, add another {"x": ..., "y": ..., "type": "..."} entry.
-# Optional "min_level" makes that spawn appear only from that level onward.
-# Optional spawn_sheet/spawn_animation fields override ENEMY_TYPE_CONFIGS for
-# one spawn point, so a future enemy can play a custom spawn animation there.
-ENEMY_SPAWN_POINTS = [
-    # Basic walker section.
-    {"x": 1120, "y": GROUND_Y, "type": "walker"},
-    {"x": 1420, "y": GROUND_Y, "type": "walker"},
 
-    # Platform/jumping section.
-    {"x": 1320, "y": 830, "type": "walker"},
-    {"x": 1830, "y": 690, "type": "walker"},
-    {"x": 2360, "y": 815, "type": "walker"},
-    {"x": 2860, "y": 720, "type": "walker"},
-    {"x": 1750, "y": GROUND_Y, "type": "tank", "min_level": 3},
-    {"x": 2500, "y": 610, "type": "flying", "min_level": 2},
+def section_items(key):
+    items = []
+    for section in LEVEL_SECTIONS:
+        for item in section.get(key, []):
+            items.append(item)
+    return items
 
-    # Flying zombie section.
-    {"x": 3400, "y": 620, "type": "flying"},
-    {"x": 3700, "y": 560, "type": "flying"},
-    {"x": 4100, "y": GROUND_Y, "type": "walker"},
 
-    # Tank zombie section.
-    {"x": 4550, "y": GROUND_Y, "type": "tank"},
-    {"x": 4900, "y": GROUND_Y, "type": "walker"},
-    {"x": 5150, "y": GROUND_Y, "type": "tank"},
-    {"x": 4720, "y": GROUND_Y, "type": "walker", "min_level": 2},
+SKYSCRAPER_LEVEL = {
+    "name": "Abandoned Overgrown Skyscraper",
+    "width": LEVEL_WIDTH,
+    "height": LEVEL_HEIGHT,
+    "player_start": PLAYER_START,
+    "exit": {
+        "x": EXIT_POSITION[0],
+        "y": EXIT_POSITION[1],
+        "width": EXIT_WIDTH,
+        "height": EXIT_HEIGHT,
+    },
+    "backgrounds": BACKGROUND_LAYERS,
+    "sections": LEVEL_SECTIONS,
+}
 
-    # Mixed enemy section.
-    {"x": 5450, "y": 640, "type": "walker"},
-    {"x": 5650, "y": 590, "type": "flying"},
-    {"x": 5900, "y": GROUND_Y, "type": "tank"},
-    {"x": 6150, "y": GROUND_Y, "type": "walker"},
-    {"x": 5750, "y": GROUND_Y, "type": "walker", "min_level": 3},
-
-    # Final horde before the exit.
-    {"x": 6350, "y": GROUND_Y, "type": "walker"},
-    {"x": 6500, "y": GROUND_Y, "type": "walker"},
-    {"x": 6650, "y": GROUND_Y, "type": "tank"},
-    {"x": 6750, "y": 620, "type": "flying"},
-    {"x": 6880, "y": GROUND_Y, "type": "walker"},
-    {"x": 6600, "y": GROUND_Y, "type": "walker", "min_level": 2},
-    {"x": 6820, "y": GROUND_Y, "type": "tank", "min_level": 4},
-]
+# Compatibility exports for older code paths. LevelManager now reads the
+# section data above, but these names remain useful for simple probes/tests.
+PLATFORMS = section_items("platforms")
+ENEMY_SPAWN_POINTS = section_items("enemy_spawns")
+PICKUP_SPAWN_POINTS = section_items("pickups")
+DECORATIONS = section_items("decorations")
 
 # These entries keep the game level-based and define how many times the shared
-# map can be replayed before the final victory screen.
+# map can be replayed before the final victory screen. Each level reuses the
+# same skyscraper layout for now, while enemy min_level values raise pressure.
 LEVELS = [
-    {"number": 1},
-    {"number": 2},
-    {"number": 3},
-    {"number": 4},
-    {"number": 5},
-    {"number": 6},
-    {"number": 7},
-    {"number": 8},
-    {"number": 9},
-    {"number": 10},
+    dict(SKYSCRAPER_LEVEL, number=number)
+    for number in range(1, 11)
 ]
 
 UPGRADES = [
@@ -222,6 +507,7 @@ UPGRADES = [
 IMAGE_PATHS = {
     "platform": "assets/images/platform.png",
     "background": "assets/images/background.png",
+    "pickup_sheet": "assets/images/ammo_health_kit.png",
 }
 
 # Sprite sheets are sliced by animation.load_animation_set.

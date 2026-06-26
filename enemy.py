@@ -46,6 +46,7 @@ class Enemy:
         self.facing_right = True
         self.dead = False
         self.removable = False
+        self.has_dropped_pickup = False
         self.attack_state = "attack"
         self.state = "idle"
         self.active = True
@@ -415,7 +416,7 @@ class GroundZombie(Enemy):
         vertical = max(0, current_node.y - next_node.y)
         air_time = max(1.0, self.estimate_air_time(vertical))
         needed_speed = horizontal / air_time
-        return max(self.speed, min(4.4, needed_speed + 0.8))
+        return max(self.speed, min(self.speed + 2.2, needed_speed + 1.2))
 
     def estimate_air_time(self, vertical):
         a = 0.5 * GRAVITY
