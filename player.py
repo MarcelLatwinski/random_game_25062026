@@ -91,7 +91,7 @@ class Player:
             self.hurt_timer = now + self.hurt_cooldown
             self.play_action("hurt")
 
-    def update(self, keys, platforms, now, dt=0):
+    def update(self, keys, platforms, now, dt=0, world_width=SCREEN_WIDTH):
         left = keys[pygame.K_a] or keys[pygame.K_LEFT]
         right = keys[pygame.K_d] or keys[pygame.K_RIGHT]
         self.vx = 0
@@ -120,8 +120,8 @@ class Player:
 
         if self.rect.left < 0:
             self.rect.left = 0
-        if self.rect.right > SCREEN_WIDTH:
-            self.rect.right = SCREEN_WIDTH
+        if self.rect.right > world_width:
+            self.rect.right = world_width
 
         self.update_animation(dt)
 
@@ -162,14 +162,15 @@ class Player:
                     self.rect.top = platform.rect.bottom
                     self.vy = 0
 
-    def draw(self, surface):
+    def draw(self, surface, camera_x=0):
+        draw_rect = self.rect.move(-camera_x, 0)
         image = self.animator.current_frame() if self.animator else self.image
         if image:
             if not self.facing_right:
                 image = pygame.transform.flip(image, True, False)
-            surface.blit(image, self.rect)
+            surface.blit(image, draw_rect)
         else:
             color = self.color
             if self.hurt_timer > pygame.time.get_ticks() / 1000:
                 color = COLOR_HURT
-            pygame.draw.rect(surface, color, self.rect)
+            pygame.draw.rect(surface, color, draw_rect)

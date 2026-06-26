@@ -1,6 +1,5 @@
 import pygame
 from settings import (
-    PLATFORMS,
     COLOR_PLATFORM,
     COLOR_PLATFORM_OUTLINE,
 )
@@ -12,13 +11,13 @@ class Platform:
         self.color = COLOR_PLATFORM
         self.outline_color = COLOR_PLATFORM_OUTLINE
 
-    def draw(self, surface, image=None):
+    def draw(self, surface, image=None, camera_x=0):
+        draw_rect = self.rect.move(-camera_x, 0)
         if image:
             image_size = (self.rect.width, self.rect.height)
             scaled = pygame.transform.scale(image, image_size)
-            surface.blit(scaled, self.rect)
+            surface.blit(scaled, draw_rect)
         else:
-            pygame.draw.rect(surface, self.color, self.rect)
-        pygame.draw.rect(surface, self.outline_color, self.rect, 4)
-
+            pygame.draw.rect(surface, self.color, draw_rect)
+        pygame.draw.rect(surface, self.outline_color, draw_rect, 4)
 

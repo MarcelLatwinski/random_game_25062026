@@ -14,7 +14,7 @@ PLAYER_BULLET_SPEED = 12
 BULLET_WIDTH = 32
 BULLET_HEIGHT = 12
 HURT_INVINCIBILITY = 0.5
-CHARACTER_ASSET_SCALE = 1.2
+CHARACTER_ASSET_SCALE = 1.5
 
 
 def scaled_character_size(size):
@@ -46,30 +46,139 @@ FLYING_DAMAGE = 8
 FLYING_WIDTH = scaled_character_size(76)
 FLYING_HEIGHT = scaled_character_size(76)
 
-SPAWN_INTERVAL_MIN = 1.2
-SPAWN_INTERVAL_MAX = 2.0
-LEFT_SPAWN_RANGE = (60, 180)
-RIGHT_SPAWN_RANGE = (1740, 1860)
 GROUND_Y = 990
 
+# This is the shared side-scrolling map used by every level.
+# Add more width here if you want a longer left-to-right level.
+LEVEL_WIDTH = 7200
+PLAYER_START = (140, GROUND_Y - PLAYER_HEIGHT)
+EXIT_POSITION = (LEVEL_WIDTH - 180, GROUND_Y)
+EXIT_WIDTH = 90
+EXIT_HEIGHT = 170
+
+# Spawn points wake up when they are this far ahead of the player.
+# The points themselves are world positions, so they do not move with the camera.
+SPAWN_ACTIVATION_DISTANCE = 800
+
+# Later levels reuse the same map and spawn list, then scale enemies a little.
+ENEMY_SPEED_SCALE_PER_LEVEL = 0.06
+ENEMY_HEALTH_SCALE_PER_LEVEL = 0.10
+GROUND_EMERGENCE_FPS = 8
+GROUND_EMERGENCE_DRAW_OFFSET_Y = 12
+
+# Enemy type config keeps asset names and optional spawn animation data together.
+# To add future spawn animations, add a SPRITE_SHEETS entry for the new sheet,
+# then set spawn_sheet/spawn_animation/spawn_state/starts_active here or on a
+# specific ENEMY_SPAWN_POINTS entry.
+ENEMY_TYPE_CONFIGS = {
+    "walker": {
+        "animation_key": "walker_zombie",
+        "spawn_sheet": "walker_zombie_ground",
+        "spawn_animation": "emerge",
+        "spawn_state": "emerging",
+        "starts_active": False,
+    },
+    "tank": {
+        "animation_key": "tank_zombie",
+        "spawn_sheet": "tank_zombie_ground",
+        "spawn_animation": "emerge",
+        "spawn_state": "emerging",
+        "starts_active": False,
+    },
+    "flying": {
+        "animation_key": "flying_zombie",
+        "starts_active": True,
+    },
+}
+
+# Platform layout for the shared level.
+# Each rectangle is (x, y, width, height) in world coordinates.
+# To add a platform, add another rectangle to this list.
 PLATFORMS = [
-    (0, 990, 1920, 90),
-    (240, 750, 405, 36),
-    (758, 520, 405, 36),
-    (1275, 750, 405, 36),
+    # Safe start and full ground path.
+    (0, GROUND_Y, LEVEL_WIDTH, 90),
+
+    # Platform/jumping section.
+    (1150, 830, 360, 36),
+    (1650, 690, 360, 36),
+    (2150, 815, 420, 36),
+    (2700, 720, 380, 36),
+
+    # Flying zombie section.
+    (3350, 610, 420, 36),
+    (3900, 790, 380, 36),
+
+    # Tank and mixed enemy sections.
+    (4650, 760, 500, 36),
+    (5350, 640, 400, 36),
+    (5850, 800, 440, 36),
+
+    # Final horde before the exit.
+    (6350, 720, 340, 36),
 ]
 
+# Zombie spawn points for the shared level.
+# x/y are the zombie's bottom-center world position.
+# For walkers and tanks, use GROUND_Y or the top y of a platform.
+# For flying zombies, use an air y such as 580 or 620.
+# To add a spawn point, add another {"x": ..., "y": ..., "type": "..."} entry.
+# Optional "min_level" makes that spawn appear only from that level onward.
+# Optional spawn_sheet/spawn_animation fields override ENEMY_TYPE_CONFIGS for
+# one spawn point, so a future enemy can play a custom spawn animation there.
+ENEMY_SPAWN_POINTS = [
+    # Basic walker section.
+    {"x": 1120, "y": GROUND_Y, "type": "walker"},
+    {"x": 1420, "y": GROUND_Y, "type": "walker"},
+
+    # Platform/jumping section.
+    {"x": 1320, "y": 830, "type": "walker"},
+    {"x": 1830, "y": 690, "type": "walker"},
+    {"x": 2360, "y": 815, "type": "walker"},
+    {"x": 2860, "y": 720, "type": "walker"},
+    {"x": 1750, "y": GROUND_Y, "type": "tank", "min_level": 3},
+    {"x": 2500, "y": 610, "type": "flying", "min_level": 2},
+
+    # Flying zombie section.
+    {"x": 3400, "y": 620, "type": "flying"},
+    {"x": 3700, "y": 560, "type": "flying"},
+    {"x": 4100, "y": GROUND_Y, "type": "walker"},
+
+    # Tank zombie section.
+    {"x": 4550, "y": GROUND_Y, "type": "tank"},
+    {"x": 4900, "y": GROUND_Y, "type": "walker"},
+    {"x": 5150, "y": GROUND_Y, "type": "tank"},
+    {"x": 4720, "y": GROUND_Y, "type": "walker", "min_level": 2},
+
+    # Mixed enemy section.
+    {"x": 5450, "y": 640, "type": "walker"},
+    {"x": 5650, "y": 590, "type": "flying"},
+    {"x": 5900, "y": GROUND_Y, "type": "tank"},
+    {"x": 6150, "y": GROUND_Y, "type": "walker"},
+    {"x": 5750, "y": GROUND_Y, "type": "walker", "min_level": 3},
+
+    # Final horde before the exit.
+    {"x": 6350, "y": GROUND_Y, "type": "walker"},
+    {"x": 6500, "y": GROUND_Y, "type": "walker"},
+    {"x": 6650, "y": GROUND_Y, "type": "tank"},
+    {"x": 6750, "y": 620, "type": "flying"},
+    {"x": 6880, "y": GROUND_Y, "type": "walker"},
+    {"x": 6600, "y": GROUND_Y, "type": "walker", "min_level": 2},
+    {"x": 6820, "y": GROUND_Y, "type": "tank", "min_level": 4},
+]
+
+# These entries keep the game level-based and define how many times the shared
+# map can be replayed before the final victory screen.
 LEVELS = [
-    {"walkers": 3, "tanks": 0, "flyers": 0},
-    {"walkers": 5, "tanks": 0, "flyers": 0},
-    {"walkers": 5, "tanks": 1, "flyers": 0},
-    {"walkers": 6, "tanks": 1, "flyers": 0},
-    {"walkers": 6, "tanks": 2, "flyers": 0},
-    {"walkers": 5, "tanks": 1, "flyers": 2},
-    {"walkers": 6, "tanks": 1, "flyers": 3},
-    {"walkers": 7, "tanks": 2, "flyers": 3},
-    {"walkers": 8, "tanks": 2, "flyers": 4},
-    {"walkers": 7, "tanks": 2, "flyers": 5},
+    {"number": 1},
+    {"number": 2},
+    {"number": 3},
+    {"number": 4},
+    {"number": 5},
+    {"number": 6},
+    {"number": 7},
+    {"number": 8},
+    {"number": 9},
+    {"number": 10},
 ]
 
 UPGRADES = [
@@ -119,10 +228,16 @@ IMAGE_PATHS = {
 # To add an animation later, add its frames to the sheet and add a named entry
 # under "animations" with the row number, frame columns, fps, and loop setting.
 SPRITE_SHEETS = {
+    # Player sheet configuration.
+    # Swap the player art by changing only this path when the replacement sheet
+    # keeps the same 4-column x 4-row row mapping below.
     "player": {
-        "path": "assets/images/player_sheet.png",
+        "path": "assets/images/new_player_sheet.png",
         "columns": 4,
         "rows": 4,
+        # No frame_rects here: the loader slices this sheet into an even 4x4
+        # grid. The frames are then scaled to PLAYER_WIDTH/PLAYER_HEIGHT with
+        # pygame.transform.scale, which keeps the pixel-art look crisp.
         "frame_width": None,
         "frame_height": None,
         "margin": 0,
@@ -130,6 +245,11 @@ SPRITE_SHEETS = {
         "scale": 1,
         "target_size": (PLAYER_WIDTH, PLAYER_HEIGHT),
         "remove_light_background": True,
+        "trim_transparent": True,
+        "align": "bottom",
+        # Row mapping:
+        # row 0 idle loops, row 1 run loops, row 2 shoot plays once,
+        # row 3 frames 0-1 jump while airborne, row 3 frames 2-3 hurt once.
         "animations": {
             "idle": {"row": 0, "frames": [0, 1, 2, 3], "fps": 8, "loop": True},
             "run": {"row": 1, "frames": [0, 1, 2, 3], "fps": 10, "loop": True},
@@ -149,11 +269,37 @@ SPRITE_SHEETS = {
         "scale": 1,
         "target_size": (WALKER_WIDTH, WALKER_HEIGHT),
         "remove_light_background": True,
+        "trim_transparent": True,
+        "align": "bottom",
         "animations": {
             "idle": {"row": 0, "frames": [0, 1, 2, 3], "fps": 8, "loop": True},
             "walk": {"row": 1, "frames": [0, 1, 2, 3], "fps": 10, "loop": True},
             "attack": {"row": 2, "frames": [0, 1, 2, 3], "fps": 10, "loop": False},
             "death": {"row": 3, "frames": [0, 1, 2, 3], "fps": 10, "loop": False},
+        },
+    },
+    "walker_zombie_ground": {
+        "path": "assets/images/walker_zombie_ground_sheet.png",
+        "columns": 4,
+        "rows": 2,
+        "frame_width": None,
+        "frame_height": None,
+        "margin": 0,
+        "spacing": 0,
+        "scale": 1,
+        "target_size": (WALKER_WIDTH, WALKER_HEIGHT),
+        "remove_light_background": True,
+        "background_min_value": 220,
+        "background_channel_spread": 32,
+        "trim_transparent": True,
+        "align": "bottom",
+        "animations": {
+            "emerge": {
+                "rows": [0, 1],
+                "fps": GROUND_EMERGENCE_FPS,
+                "loop": False,
+                "draw_offset": (0, GROUND_EMERGENCE_DRAW_OFFSET_Y),
+            },
         },
     },
     "tank_zombie": {
@@ -167,11 +313,37 @@ SPRITE_SHEETS = {
         "scale": 1,
         "target_size": (TANK_WIDTH, TANK_HEIGHT),
         "remove_light_background": True,
+        "trim_transparent": True,
+        "align": "bottom",
         "animations": {
             "idle": {"row": 0, "frames": [0, 1, 2, 3], "fps": 8, "loop": True},
             "walk": {"row": 1, "frames": [0, 1, 2, 3], "fps": 10, "loop": True},
             "heavy_attack": {"row": 2, "frames": [0, 1, 2, 3], "fps": 10, "loop": False},
             "death": {"row": 3, "frames": [0, 1, 2, 3], "fps": 10, "loop": False},
+        },
+    },
+    "tank_zombie_ground": {
+        "path": "assets/images/tank_zombie_ground_sheet.png",
+        "columns": 4,
+        "rows": 2,
+        "frame_width": None,
+        "frame_height": None,
+        "margin": 0,
+        "spacing": 0,
+        "scale": 1,
+        "target_size": (TANK_WIDTH, TANK_HEIGHT),
+        "remove_light_background": True,
+        "background_min_value": 220,
+        "background_channel_spread": 32,
+        "trim_transparent": True,
+        "align": "bottom",
+        "animations": {
+            "emerge": {
+                "rows": [0, 1],
+                "fps": GROUND_EMERGENCE_FPS,
+                "loop": False,
+                "draw_offset": (0, GROUND_EMERGENCE_DRAW_OFFSET_Y),
+            },
         },
     },
     "flying_zombie": {
@@ -185,6 +357,8 @@ SPRITE_SHEETS = {
         "scale": 1,
         "target_size": (FLYING_WIDTH, FLYING_HEIGHT),
         "remove_light_background": True,
+        "trim_transparent": True,
+        "align": "bottom",
         "animations": {
             "hover_idle": {"row": 0, "frames": [0, 1, 2, 3], "fps": 8, "loop": True},
             "fly": {"row": 1, "frames": [0, 1, 2, 3], "fps": 10, "loop": True},
@@ -203,6 +377,8 @@ SPRITE_SHEETS = {
         "scale": 1,
         "target_size": (BULLET_WIDTH, BULLET_HEIGHT),
         "remove_light_background": True,
+        "trim_transparent": True,
+        "align": "center",
         "animations": {
             "travel": {"row": 0, "frames": [0, 1, 2, 3], "fps": 14, "loop": True},
             "impact": {"row": 1, "frames": [0, 1, 2, 3], "fps": 16, "loop": False},

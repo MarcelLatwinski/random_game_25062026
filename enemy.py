@@ -26,7 +26,6 @@ from settings import (
     COLOR_WALKER,
     COLOR_TANK,
     COLOR_FLYING,
-    SCREEN_WIDTH,
 )
 # platform detection is handled locally in GroundZombie
 
@@ -48,9 +47,24 @@ class Enemy:
         self.dead = False
         self.removable = False
         self.attack_state = "attack"
+        self.state = "idle"
+        self.active = True
+        self.invulnerable = False
+        self.spawn_state = None
+        self.spawn_animation_state = None
+        self.post_spawn_state = "idle"
+
+    def is_active(self):
+        return self.active and not self.dead
+
+    def is_emerging(self):
+        return (
+            self.spawn_animation_state is not None
+            and self.state == self.spawn_state
+        )
 
     def take_damage(self, amount):
-        if self.dead:
+        if self.dead or self.invulnerable or not self.active:
             return
         self.hp -= amount
         if self.hp <= 0:
@@ -59,6 +73,11 @@ class Enemy:
     def die(self):
         self.hp = 0
         self.dead = True
+        self.active = False
+        self.invulnerable = False
+        self.state = "death"
+        self.spawn_state = None
+        self.spawn_animation_state = None
         self.vx = 0
         self.vy = 0
         if self.animator and self.animator.has_state("death"):
@@ -67,16 +86,67 @@ class Enemy:
             self.removable = True
 
     def start_attack(self):
-        if self.dead:
+        if self.dead or not self.active:
             return
         if self.animator and self.animator.has_state(self.attack_state):
+            self.state = self.attack_state
             self.animator.play_once(self.attack_state)
+
+    def start_spawn_animation(
+        self,
+        animation_state,
+        state="emerging",
+        post_spawn_state="idle",
+    ):
+        if not animation_state or not self.animator or not self.animator.has_state(animation_state):
+            self.finish_spawn_animation(post_spawn_state)
+            return False
+
+        self.state = state
+        self.spawn_state = state
+        self.spawn_animation_state = animation_state
+        self.post_spawn_state = post_spawn_state
+        self.active = False
+        self.invulnerable = True
+        self.vx = 0
+        self.vy = 0
+        self.animator.play_once(animation_state)
+        return True
+
+    def update_spawn_animation(self, dt):
+        if not self.is_emerging():
+            return
+
+        self.vx = 0
+        self.vy = 0
+        if not self.animator:
+            self.finish_spawn_animation()
+            return
+
+        if self.animator.current_state != self.spawn_animation_state:
+            self.animator.play_once(self.spawn_animation_state)
+
+        self.animator.update(dt)
+        if self.animator.is_finished():
+            self.finish_spawn_animation()
+
+    def finish_spawn_animation(self, post_spawn_state=None):
+        self.active = True
+        self.invulnerable = False
+        self.spawn_state = None
+        self.spawn_animation_state = None
+        self.state = post_spawn_state or self.post_spawn_state
+        self.vx = 0
+        self.vy = 0
+        if self.animator and self.animator.has_state(self.state):
+            self.animator.play(self.state)
 
     def update_death_animation(self, dt):
         if not self.animator:
             self.removable = True
             return
 
+        self.state = "death"
         self.animator.play("death")
         self.animator.update(dt)
         if self.animator.is_finished():
@@ -84,10 +154,14 @@ class Enemy:
 
     def update_animation(self, dt, movement_state):
         if not self.animator:
+            self.state = movement_state
             return
 
         if not self.animator.is_playing_once():
+            self.state = movement_state
             self.animator.play(movement_state)
+        else:
+            self.state = self.animator.current_state or self.state
 
         self.animator.update(dt)
 
@@ -103,14 +177,21 @@ class Enemy:
         self.pos_x = float(self.rect.x)
         self.pos_y = float(self.rect.y)
 
-    def draw(self, surface):
+    def draw(self, surface, camera_x=0):
+        draw_rect = self.rect.move(-camera_x, 0)
         image = self.animator.current_frame() if self.animator else self.image
         if image:
+            offset_x, offset_y = (
+                self.animator.current_draw_offset()
+                if self.animator
+                else (0, 0)
+            )
+            draw_rect = draw_rect.move(offset_x, offset_y)
             if not self.facing_right:
                 image = pygame.transform.flip(image, True, False)
-            surface.blit(image, self.rect)
+            surface.blit(image, draw_rect)
         else:
-            pygame.draw.rect(surface, self.color, self.rect)
+            pygame.draw.rect(surface, self.color, draw_rect)
 
 class GroundZombie(Enemy):
     def __init__(self, x, y, width, height, hp, speed, damage, jump_interval, jump_strength, image=None, animations=None, color=(255, 255, 255)):
@@ -145,6 +226,9 @@ class GroundZombie(Enemy):
     def update(self, player, platforms, dt):
         if self.dead:
             self.update_death_animation(dt)
+            return
+        if self.is_emerging():
+            self.update_spawn_animation(dt)
             return
 
         self.current_platform = self.find_platform(self.rect, platforms) if self.on_ground else None

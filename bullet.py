@@ -15,7 +15,7 @@ class Bullet:
         self.impacting = False
         self.removable = False
 
-    def update(self, platforms, dt=0):
+    def update(self, platforms, dt=0, world_width=SCREEN_WIDTH):
         if self.impacting:
             self.update_animation(dt)
             return not self.removable
@@ -33,7 +33,7 @@ class Bullet:
                 self.update_animation(dt)
                 return not self.removable
 
-        if not self.is_on_screen():
+        if not self.is_in_world(world_width):
             return False
 
         self.update_animation(dt)
@@ -61,19 +61,20 @@ class Bullet:
         if self.impacting and self.animator.is_finished():
             self.removable = True
 
-    def is_on_screen(self):
+    def is_in_world(self, world_width):
         return (
             -50 < self.rect.right
-            and self.rect.left < SCREEN_WIDTH + 50
+            and self.rect.left < world_width + 50
             and -50 < self.rect.bottom
             and self.rect.top < SCREEN_HEIGHT + 50
         )
 
-    def draw(self, surface):
+    def draw(self, surface, camera_x=0):
+        draw_rect = self.rect.move(-camera_x, 0)
         image = self.animator.current_frame() if self.animator else self.image
         if image:
             if self.vx < 0:
                 image = pygame.transform.flip(image, True, False)
-            surface.blit(image, self.rect)
+            surface.blit(image, draw_rect)
         else:
-            pygame.draw.rect(surface, COLOR_BULLET, self.rect)
+            pygame.draw.rect(surface, COLOR_BULLET, draw_rect)

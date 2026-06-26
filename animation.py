@@ -4,16 +4,17 @@ import pygame
 
 
 class Animation:
-    def __init__(self, frames, fps=10, loop=True):
+    def __init__(self, frames, fps=10, loop=True, draw_offset=(0, 0)):
         self.frames = frames
         self.fps = fps
         self.loop = loop
+        self.draw_offset = draw_offset
         self.current_index = 0
         self.elapsed = 0.0
         self.finished = False
 
     def copy(self):
-        return Animation(self.frames, self.fps, self.loop)
+        return Animation(self.frames, self.fps, self.loop, self.draw_offset)
 
     def reset(self):
         self.current_index = 0
@@ -41,6 +42,9 @@ class Animation:
         if not self.frames:
             return None
         return self.frames[self.current_index]
+
+    def current_draw_offset(self):
+        return self.draw_offset
 
 
 class AnimatedSprite:
@@ -84,6 +88,12 @@ class AnimatedSprite:
             return animation.current_frame()
         return None
 
+    def current_draw_offset(self):
+        animation = self.current_animation()
+        if animation:
+            return animation.current_draw_offset()
+        return (0, 0)
+
     def is_finished(self):
         animation = self.current_animation()
         return bool(animation and animation.finished)
@@ -102,65 +112,174 @@ def load_animation_set(sheet_config):
     frames_by_row = slice_sheet(sheet, sheet_config)
     animations = {}
 
-    # Add more animations by adding a row/frame entry in settings.SPRITE_SHEETS.
+    # Add more animations by adding row/frame entries in settings.SPRITE_SHEETS.
+    # Animations can also span several rows with "rows" or use "frame_sequence".
     for name, animation_config in sheet_config["animations"].items():
-        row = animation_config["row"]
-        frame_numbers = animation_config.get("frames")
-        if frame_numbers is None:
-            frame_numbers = range(sheet_config["columns"])
-
-        frames = [frames_by_row[row][column] for column in frame_numbers]
+        frames = collect_animation_frames(frames_by_row, sheet_config, animation_config)
         animations[name] = Animation(
             frames,
             fps=animation_config.get("fps", 10),
             loop=animation_config.get("loop", True),
+            draw_offset=animation_config.get(
+                "draw_offset",
+                sheet_config.get("draw_offset", (0, 0)),
+            ),
         )
 
     return animations
 
 
+def collect_animation_frames(frames_by_row, sheet_config, animation_config):
+    frame_sequence = animation_config.get("frame_sequence")
+    if frame_sequence is not None:
+        return [
+            frames_by_row[row][column]
+            for row, column in frame_sequence
+        ]
+
+    frame_numbers = animation_config.get("frames")
+    if frame_numbers is None:
+        frame_numbers = range(sheet_config["columns"])
+
+    rows = animation_config.get("rows")
+    if rows is not None:
+        return [
+            frames_by_row[row][column]
+            for row in rows
+            for column in frame_numbers
+        ]
+
+    row = animation_config["row"]
+    return [frames_by_row[row][column] for column in frame_numbers]
+
+
 def slice_sheet(sheet, sheet_config):
     columns = sheet_config["columns"]
     rows = sheet_config["rows"]
-    margin = sheet_config.get("margin", 0)
-    spacing = sheet_config.get("spacing", 0)
-    scale = sheet_config.get("scale", 1)
-    target_size = sheet_config.get("target_size")
-
-    frame_width = sheet_config.get("frame_width")
-    if frame_width is None:
-        frame_width = (sheet.get_width() - margin * 2 - spacing * (columns - 1)) // columns
-
-    frame_height = sheet_config.get("frame_height")
-    if frame_height is None:
-        frame_height = (sheet.get_height() - margin * 2 - spacing * (rows - 1)) // rows
+    frame_rects = build_frame_rects(sheet, sheet_config)
 
     frames_by_row = []
     for row in range(rows):
         frames = []
         for column in range(columns):
-            x = margin + column * (frame_width + spacing)
-            y = margin + row * (frame_height + spacing)
-            source_rect = pygame.Rect(x, y, frame_width, frame_height)
-            frame = pygame.Surface((frame_width, frame_height), pygame.SRCALPHA)
+            source_rect = frame_rects[row][column]
+            frame = pygame.Surface(source_rect.size, pygame.SRCALPHA)
             frame.blit(sheet, (0, 0), source_rect)
-
-            if target_size:
-                frame = pygame.transform.scale(frame, target_size)
-            elif scale != 1:
-                scaled_size = (
-                    int(round(frame_width * scale)),
-                    int(round(frame_height * scale)),
-                )
-                frame = pygame.transform.scale(frame, scaled_size)
 
             if sheet_config.get("remove_light_background", False):
                 remove_light_background(frame, sheet_config)
+
+            if sheet_config.get("trim_transparent", False):
+                frame = trim_and_scale_frame(frame, sheet_config)
+            else:
+                frame = scale_frame(frame, sheet_config)
 
             frames.append(frame)
         frames_by_row.append(frames)
 
     return frames_by_row
+
+
+def build_frame_rects(sheet, sheet_config):
+    columns = sheet_config["columns"]
+    rows = sheet_config["rows"]
+    configured_rects = sheet_config.get("frame_rects")
+
+    if configured_rects:
+        return [
+            [
+                pygame.Rect(configured_rects[row][column])
+                for column in range(columns)
+            ]
+            for row in range(rows)
+        ]
+
+    margin = sheet_config.get("margin", 0)
+    spacing = sheet_config.get("spacing", 0)
+    explicit_width = sheet_config.get("frame_width")
+    explicit_height = sheet_config.get("frame_height")
+
+    if explicit_width and explicit_height:
+        return [
+            [
+                pygame.Rect(
+                    margin + column * (explicit_width + spacing),
+                    margin + row * (explicit_height + spacing),
+                    explicit_width,
+                    explicit_height,
+                )
+                for column in range(columns)
+            ]
+            for row in range(rows)
+        ]
+
+    available_width = sheet.get_width() - margin * 2 - spacing * (columns - 1)
+    available_height = sheet.get_height() - margin * 2 - spacing * (rows - 1)
+    x_edges = [round(index * available_width / columns) for index in range(columns + 1)]
+    y_edges = [round(index * available_height / rows) for index in range(rows + 1)]
+
+    return [
+        [
+            pygame.Rect(
+                margin + x_edges[column] + column * spacing,
+                margin + y_edges[row] + row * spacing,
+                x_edges[column + 1] - x_edges[column],
+                y_edges[row + 1] - y_edges[row],
+            )
+            for column in range(columns)
+        ]
+        for row in range(rows)
+    ]
+
+
+def scale_frame(frame, sheet_config):
+    target_size = sheet_config.get("target_size")
+    scale = sheet_config.get("scale", 1)
+
+    if target_size:
+        return pygame.transform.scale(frame, target_size)
+    if scale != 1:
+        scaled_size = (
+            int(round(frame.get_width() * scale)),
+            int(round(frame.get_height() * scale)),
+        )
+        return pygame.transform.scale(frame, scaled_size)
+    return frame
+
+
+def trim_and_scale_frame(frame, sheet_config):
+    bounds = get_opaque_bounds(frame)
+    if bounds is None:
+        return scale_frame(frame, sheet_config)
+
+    trimmed = pygame.Surface(bounds.size, pygame.SRCALPHA)
+    trimmed.blit(frame, (0, 0), bounds)
+
+    target_size = sheet_config.get("target_size")
+    if not target_size:
+        return trimmed
+
+    target_width, target_height = target_size
+    scale = min(target_width / trimmed.get_width(), target_height / trimmed.get_height())
+    scaled_size = (
+        max(1, int(round(trimmed.get_width() * scale))),
+        max(1, int(round(trimmed.get_height() * scale))),
+    )
+    trimmed = pygame.transform.scale(trimmed, scaled_size)
+
+    canvas = pygame.Surface(target_size, pygame.SRCALPHA)
+    align = sheet_config.get("align", "bottom")
+    x = (target_width - trimmed.get_width()) // 2
+    y = target_height - trimmed.get_height() if align == "bottom" else (target_height - trimmed.get_height()) // 2
+    canvas.blit(trimmed, (x, y))
+    return canvas
+
+
+def get_opaque_bounds(surface):
+    bounds = surface.get_bounding_rect(min_alpha=1)
+    if bounds.width == 0 or bounds.height == 0:
+        return None
+    return bounds
 
 
 def remove_light_background(surface, sheet_config):

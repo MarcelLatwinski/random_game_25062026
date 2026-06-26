@@ -9,20 +9,20 @@ from settings import (
     LEVELS,
 )
 
-FONT = None
+FONTS = {}
 
 def load_font(name="Segoe UI", size=24, bold=False):
-    global FONT
-    if FONT is None or FONT.get_height() != size:
-        FONT = pygame.font.SysFont(name, size, bold=bold)
-    return FONT
+    key = (name, size, bold)
+    if key not in FONTS:
+        FONTS[key] = pygame.font.SysFont(name, size, bold=bold)
+    return FONTS[key]
 
 class UI:
     def __init__(self):
         self.font = load_font()
 
     def draw_text(self, surface, text, x, y, color=COLOR_TEXT, size=24, bold=False):
-        font = pygame.font.SysFont("Segoe UI", size, bold=bold)
+        font = load_font("Segoe UI", size, bold=bold)
         text_surface = font.render(text, True, color)
         surface.blit(text_surface, (x, y))
 
@@ -50,13 +50,13 @@ class UI:
 
     def draw_main_menu(self, surface):
         surface.fill(COLOR_BACKGROUND)
-        title_font = pygame.font.SysFont("Segoe UI Black", 104, bold=True)
-        subtitle_font = pygame.font.SysFont("Segoe UI", 54, bold=True)
-        info_font = pygame.font.SysFont("Segoe UI", 30, bold=True)
+        title_font = load_font("Segoe UI Black", 104, bold=True)
+        subtitle_font = load_font("Segoe UI", 54, bold=True)
+        info_font = load_font("Segoe UI", 30, bold=True)
 
         title_surface = title_font.render("Zombie Platform Shooter", True, COLOR_TEXT)
         subtitle_surface = subtitle_font.render("Click to Start", True, COLOR_TEXT)
-        info_surface = info_font.render("Survive waves, upgrade between levels, stay alive.", True, COLOR_TEXT)
+        info_surface = info_font.render("Travel right, reach the exit, upgrade between levels.", True, COLOR_TEXT)
 
         title_x = (SCREEN_WIDTH - title_surface.get_width()) // 2
         title_y = SCREEN_HEIGHT // 2 - 180
@@ -73,6 +73,17 @@ class UI:
         surface.blit(subtitle_surface, (subtitle_x, subtitle_y))
 
         surface.blit(info_surface, (info_x, info_y))
+
+    def draw_loading(self, surface):
+        surface.fill(COLOR_BACKGROUND)
+        self.draw_text(
+            surface,
+            "Loading...",
+            SCREEN_WIDTH // 2 - 140,
+            SCREEN_HEIGHT // 2 - 36,
+            size=64,
+            bold=True,
+        )
 
     def draw_pause(self, surface):
         self.draw_text(surface, "Paused", 560, 260, size=48)

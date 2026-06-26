@@ -1,26 +1,14 @@
 import pygame
 import os
-import random
 from settings import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
     FPS,
     COLOR_BACKGROUND,
-    PLATFORMS,
+    COLOR_TEXT,
     IMAGE_PATHS,
-    LEVELS,
-    PLAYER_WIDTH,
-    PLAYER_HEIGHT,
-    WALKER_WIDTH,
-    WALKER_HEIGHT,
-    TANK_WIDTH,
-    TANK_HEIGHT,
-    FLYING_WIDTH,
-    FLYING_HEIGHT,
-    BULLET_WIDTH,
-    BULLET_HEIGHT,
-    GROUND_Y,
     SPRITE_SHEETS,
+    ENEMY_TYPE_CONFIGS,
 )
 from animation import load_animation_set
 from player import Player
@@ -32,6 +20,7 @@ from platform_nav import PlatformGraph, DEBUG_PATHS
 
 GAME_STATES = [
     "MAIN_MENU",
+    "LOADING",
     "PLAYING",
     "UPGRADE_SELECT",
     "PAUSED",
@@ -41,56 +30,139 @@ GAME_STATES = [
 
 class Game:
     def __init__(self):
-        pygame.init()
+        pygame.display.init()
+        pygame.font.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Zombie Platform Shooter")
         self.clock = pygame.time.Clock()
         self.state = "MAIN_MENU"
-        self.images = self.load_images()
-        self.platforms = [Platform(rect, idx) for idx, rect in enumerate(PLATFORMS)]
-        self.platform_graph = PlatformGraph(self.platforms)
-        self.player = Player(
-            620,
-            GROUND_Y - PLAYER_HEIGHT,
-            animations=self.images.get("player"),
-            bullet_animations=self.images.get("bullet"),
-        )
+        self.images = {}
+        self.scaled_background = None
+        self.loading_screen_drawn = False
         self.level_manager = LevelManager()
+        self.platforms = []
+        self.platform_graph = None
+        self.load_level_layout()
+        self.player = self.create_player()
         self.upgrade_manager = UpgradeManager()
         self.ui = UI()
         self.bullets = []
         self.last_mouse = (0, 0)
+        self.camera_x = 0
         self.debug_font = pygame.font.SysFont(None, 20)
 
-    def load_images(self):
-        images = {}
-        for key, path in IMAGE_PATHS.items():
-            if os.path.exists(path):
-                try:
-                    loaded = pygame.image.load(path).convert_alpha()
-                    images[key] = loaded
-                except pygame.error:
-                    images[key] = None
-            else:
-                images[key] = None
+    def load_level_layout(self):
+        self.platforms = [
+            Platform(rect, idx)
+            for idx, rect in enumerate(self.level_manager.platforms)
+        ]
+        self.platform_graph = PlatformGraph(self.platforms)
 
-        for key, sheet_config in SPRITE_SHEETS.items():
-            try:
-                images[key] = load_animation_set(sheet_config)
-            except pygame.error:
-                images[key] = None
-        return images
-
-    def reset(self):
-        self.player = Player(
-            620,
-            GROUND_Y - PLAYER_HEIGHT,
+    def create_player(self):
+        x, y = self.level_manager.player_start
+        return Player(
+            x,
+            y,
             animations=self.images.get("player"),
             bullet_animations=self.images.get("bullet"),
         )
-        self.level_manager.reset()
+
+    def reset_player_for_level(self):
+        self.player.rect.topleft = self.level_manager.player_start
+        self.player.vx = 0
+        self.player.vy = 0
+        self.player.on_ground = False
+        self.update_camera()
+
+    def load_images(self):
+        for key, path in IMAGE_PATHS.items():
+            self.load_image(key, path)
+
+        for key in SPRITE_SHEETS:
+            self.load_animation(key)
+        return self.images
+
+    def load_image(self, key, path):
+        if key in self.images:
+            return self.images[key]
+
+        image = None
+        if os.path.exists(path):
+            try:
+                image = pygame.image.load(path).convert_alpha()
+            except pygame.error:
+                image = None
+
+        self.images[key] = image
+        if key == "background" and image:
+            self.scaled_background = pygame.transform.scale(image, (SCREEN_WIDTH, SCREEN_HEIGHT))
+        return image
+
+    def load_animation(self, key):
+        if key in self.images:
+            return self.images[key]
+
+        sheet_config = SPRITE_SHEETS.get(key)
+        if not sheet_config:
+            self.images[key] = None
+            return None
+
+        try:
+            self.images[key] = load_animation_set(sheet_config)
+        except pygame.error:
+            self.images[key] = None
+        return self.images[key]
+
+    def load_core_gameplay_assets(self):
+        for key, path in IMAGE_PATHS.items():
+            self.load_image(key, path)
+        for key in ("player", "bullet"):
+            self.load_animation(key)
+
+    def load_current_level_enemy_assets(self):
+        keys = set()
+
+        for config in ENEMY_TYPE_CONFIGS.values():
+            for key_name in ("animation_key", "spawn_sheet"):
+                key = config.get(key_name)
+                if key:
+                    keys.add(key)
+
+        for spawn_point in self.level_manager.enemy_spawn_points:
+            for key_name in ("animation_key", "spawn_sheet"):
+                key = spawn_point.get(key_name)
+                if key:
+                    keys.add(key)
+
+        for key in sorted(keys):
+            self.load_animation(key)
+
+    def load_current_level_assets(self):
+        self.load_core_gameplay_assets()
+        self.load_current_level_enemy_assets()
+
+    def request_start_game(self):
+        self.state = "LOADING"
+        self.loading_screen_drawn = False
+
+    def start_game(self):
+        self.level_manager.start_level()
+        self.load_level_layout()
+        self.load_current_level_assets()
+        self.player = self.create_player()
         self.bullets = []
+        self.update_camera()
+        self.state = "PLAYING"
+        self.loading_screen_drawn = False
+
+    def reset(self):
+        self.level_manager.reset()
+        self.load_level_layout()
+        self.player = self.create_player()
+        self.bullets = []
+        self.update_camera()
         self.state = "MAIN_MENU"
+        self.loading_screen_drawn = False
 
     def run(self):
         running = True
@@ -112,10 +184,9 @@ class Game:
                 self.last_mouse = event.pos
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self.state == "MAIN_MENU":
-                    self.state = "PLAYING"
-                    self.level_manager.start_level()
+                    self.request_start_game()
                 elif self.state == "PLAYING":
-                    bullet = self.player.shoot(self.last_mouse, now)
+                    bullet = self.player.shoot(self.screen_to_world(self.last_mouse), now)
                     if bullet:
                         self.bullets.append(bullet)
                 elif self.state == "UPGRADE_SELECT":
@@ -153,21 +224,39 @@ class Game:
             self.player.picked_upgrades.append(picked["name"])
         self.upgrade_manager.apply_upgrade(self.player, choice_index)
         if self.level_manager.next_level():
+            self.load_level_layout()
+            self.load_current_level_enemy_assets()
+            self.reset_player_for_level()
+            self.bullets = []
             self.state = "PLAYING"
         else:
             self.state = "VICTORY"
 
+    def screen_to_world(self, screen_pos):
+        return (screen_pos[0] + self.camera_x, screen_pos[1])
+
+    def update_camera(self):
+        max_camera_x = max(0, self.level_manager.level_width - SCREEN_WIDTH)
+        target_x = self.player.rect.centerx - SCREEN_WIDTH // 2
+        self.camera_x = max(0, min(target_x, max_camera_x))
+
     def update(self, dt, now):
+        if self.state == "LOADING":
+            if self.loading_screen_drawn:
+                self.start_game()
+            return
+
         if self.state == "PLAYING":
             keys = pygame.key.get_pressed()
-            self.player.update(keys, self.platforms, now, dt)
+            self.player.update(keys, self.platforms, now, dt, self.level_manager.level_width)
+            self.update_camera()
             self.level_manager.update(dt, self.platforms, self.player, self.images, self.platform_graph)
             self.update_bullets(dt)
             self.check_collisions(now)
             if self.player.health <= 0:
                 self.state = "GAME_OVER"
-            elif self.level_manager.level_complete():
-                if self.level_manager.level_index == len(LEVELS) - 1:
+            elif self.level_manager.level_complete(self.player):
+                if self.level_manager.is_final_level():
                     self.state = "VICTORY"
                 else:
                     self.upgrade_manager.pick_upgrades()
@@ -175,12 +264,12 @@ class Game:
 
     def update_bullets(self, dt):
         for bullet in list(self.bullets):
-            if not bullet.update(self.platforms, dt):
+            if not bullet.update(self.platforms, dt, self.level_manager.level_width):
                 self.bullets.remove(bullet)
 
     def check_collisions(self, now):
         for enemy in list(self.level_manager.active_enemies):
-            if getattr(enemy, "dead", False):
+            if getattr(enemy, "dead", False) or not enemy.is_active():
                 continue
             if enemy.rect.colliderect(self.player.rect):
                 enemy.start_attack()
@@ -196,6 +285,10 @@ class Game:
     def draw(self):
         if self.state == "MAIN_MENU":
             self.ui.draw_main_menu(self.screen)
+            return
+        if self.state == "LOADING":
+            self.ui.draw_loading(self.screen)
+            self.loading_screen_drawn = True
             return
         if self.state == "PAUSED":
             self.draw_gameplay()
@@ -216,22 +309,30 @@ class Game:
             self.draw_gameplay()
 
     def draw_gameplay(self):
-        if self.images.get("background"):
-            bg = pygame.transform.scale(self.images["background"], (SCREEN_WIDTH, SCREEN_HEIGHT))
-            self.screen.blit(bg, (0, 0))
+        if self.scaled_background:
+            self.screen.blit(self.scaled_background, (0, 0))
         else:
             self.screen.fill(COLOR_BACKGROUND)
 
         pygame.draw.circle(self.screen, (255, 255, 100), (SCREEN_WIDTH - 90, 90), 40)
 
         for platform in self.platforms:
-            platform.draw(self.screen, image=self.images.get("platform"))
+            platform.draw(self.screen, image=self.images.get("platform"), camera_x=self.camera_x)
 
-        self.player.draw(self.screen)
+        self.draw_exit()
+        self.player.draw(self.screen, camera_x=self.camera_x)
         for enemy in self.level_manager.active_enemies:
-            enemy.draw(self.screen)
+            enemy.draw(self.screen, camera_x=self.camera_x)
         for bullet in self.bullets:
-            bullet.draw(self.screen)
+            bullet.draw(self.screen, camera_x=self.camera_x)
+
+        if DEBUG_PATHS:
+            self.platform_graph.draw(self.screen, self.debug_font, self.level_manager.active_enemies, self.camera_x)
 
         self.ui.draw_health_bar(self.screen, self.player)
         self.ui.draw_level(self.screen, self.level_manager.current_level_number())
+
+    def draw_exit(self):
+        exit_rect = self.level_manager.exit_rect().move(-self.camera_x, 0)
+        pygame.draw.rect(self.screen, (80, 220, 120), exit_rect)
+        pygame.draw.rect(self.screen, COLOR_TEXT, exit_rect, 4)

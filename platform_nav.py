@@ -240,7 +240,7 @@ class PlatformGraph:
     def _heuristic(self, node_id, goal_id):
         return self._distance(node_id, goal_id)
 
-    def draw(self, surface, font, zombies):
+    def draw(self, surface, font, zombies, camera_x=0):
         if not DEBUG_PATHS:
             return
         colors = {
@@ -252,15 +252,21 @@ class PlatformGraph:
             src = self.nodes[src_id]
             for edge in edges:
                 dest = self.nodes[edge.dest_id]
-                pygame.draw.line(surface, colors.get(edge.action, (255, 255, 255)), (src.x, src.y), (dest.x, dest.y), 2)
+                pygame.draw.line(
+                    surface,
+                    colors.get(edge.action, (255, 255, 255)),
+                    (src.x - camera_x, src.y),
+                    (dest.x - camera_x, dest.y),
+                    2,
+                )
         for node in self.nodes.values():
-            pygame.draw.circle(surface, (255, 255, 255), (int(node.x), int(node.y)), 5)
+            pygame.draw.circle(surface, (255, 255, 255), (int(node.x - camera_x), int(node.y)), 5)
             text = font.render(node.type[0].upper(), True, (255, 255, 255))
-            surface.blit(text, (node.x - 6, node.y - 26))
+            surface.blit(text, (node.x - camera_x - 6, node.y - 26))
         for platform_id, node_ids in self.nodes_by_platform.items():
             first = self.nodes.get(f"{platform_id}_center", self.nodes[node_ids[0]])
             text = font.render(str(platform_id), True, (255, 255, 0))
-            surface.blit(text, (first.x - 6, first.y - 50))
+            surface.blit(text, (first.x - camera_x - 6, first.y - 50))
         for zombie in zombies:
             if not hasattr(zombie, "path") or not zombie.path:
                 continue
@@ -268,13 +274,13 @@ class PlatformGraph:
                 node = self.nodes.get(node_id)
                 if not node:
                     continue
-                pygame.draw.circle(surface, (255, 80, 80), (int(node.x), int(node.y)), 8, 2)
+                pygame.draw.circle(surface, (255, 80, 80), (int(node.x - camera_x), int(node.y)), 8, 2)
                 if idx == zombie.current_path_index:
-                    pygame.draw.circle(surface, (255, 255, 0), (int(node.x), int(node.y)), 10, 2)
+                    pygame.draw.circle(surface, (255, 255, 0), (int(node.x - camera_x), int(node.y)), 10, 2)
             if hasattr(zombie, "current_platform") and zombie.current_platform is not None:
                 info = f"P{zombie.current_platform.id}"
                 text = font.render(info, True, (255, 255, 0))
-                surface.blit(text, (zombie.rect.x, zombie.rect.y - 22))
+                surface.blit(text, (zombie.rect.x - camera_x, zombie.rect.y - 22))
 
 
 def get_current_platform(entity, platforms, tolerance=8):
