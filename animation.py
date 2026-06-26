@@ -108,14 +108,21 @@ def load_animation_set(sheet_config):
     if not os.path.exists(path):
         return None
 
-    sheet = pygame.image.load(path).convert_alpha()
-    frames_by_row = slice_sheet(sheet, sheet_config)
+    frames_by_row = load_sheet_frames(sheet_config)
     animations = {}
 
     # Add more animations by adding row/frame entries in settings.SPRITE_SHEETS.
-    # Animations can also span several rows with "rows" or use "frame_sequence".
+    # Animations can span rows, use frame_sequence, or provide their own
+    # per-animation "sheet" config while inheriting shared visual settings.
     for name, animation_config in sheet_config["animations"].items():
-        frames = collect_animation_frames(frames_by_row, sheet_config, animation_config)
+        source_config = get_animation_source_config(sheet_config, animation_config)
+        source_frames = frames_by_row
+        if source_config is not sheet_config:
+            source_frames = load_sheet_frames(source_config)
+            if source_frames is None:
+                continue
+
+        frames = collect_animation_frames(source_frames, source_config, animation_config)
         animations[name] = Animation(
             frames,
             fps=animation_config.get("fps", 10),
@@ -127,6 +134,51 @@ def load_animation_set(sheet_config):
         )
 
     return animations
+
+
+def load_sheet_frames(sheet_config):
+    path = sheet_config["path"]
+    if not os.path.exists(path):
+        return None
+
+    sheet = pygame.image.load(path).convert_alpha()
+    return slice_sheet(sheet, sheet_config)
+
+
+def get_animation_source_config(sheet_config, animation_config):
+    animation_sheet = animation_config.get("sheet")
+    if not animation_sheet:
+        return sheet_config
+
+    inherited_keys = (
+        "target_size",
+        "remove_light_background",
+        "background_min_value",
+        "background_channel_spread",
+        "trim_transparent",
+        "align",
+        "draw_offset",
+    )
+    source_config = {
+        key: sheet_config[key]
+        for key in inherited_keys
+        if key in sheet_config
+    }
+    source_config.update(
+        {
+            "path": animation_sheet["path"],
+            "columns": animation_sheet["columns"],
+            "rows": animation_sheet.get("rows", 1),
+            "frame_width": animation_sheet.get("frame_width"),
+            "frame_height": animation_sheet.get("frame_height"),
+            "margin": animation_sheet.get("margin", 0),
+            "spacing": animation_sheet.get("spacing", 0),
+            "scale": animation_sheet.get("scale", sheet_config.get("scale", 1)),
+        }
+    )
+    if "frame_rects" in animation_sheet:
+        source_config["frame_rects"] = animation_sheet["frame_rects"]
+    return source_config
 
 
 def collect_animation_frames(frames_by_row, sheet_config, animation_config):

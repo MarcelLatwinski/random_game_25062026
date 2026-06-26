@@ -229,30 +229,73 @@ IMAGE_PATHS = {
 # under "animations" with the row number, frame columns, fps, and loop setting.
 SPRITE_SHEETS = {
     # Player sheet configuration.
-    # Swap the player art by changing only this path when the replacement sheet
-    # keeps the same 4-column x 4-row row mapping below.
+    # This main sheet supplies idle, shoot, jump, and hurt. Individual
+    # animations can override it with their own "sheet" config, as run does.
     "player": {
         "path": "assets/images/new_player_sheet.png",
         "columns": 4,
         "rows": 4,
-        # No frame_rects here: the loader slices this sheet into an even 4x4
-        # grid. The frames are then scaled to PLAYER_WIDTH/PLAYER_HEIGHT with
-        # pygame.transform.scale, which keeps the pixel-art look crisp.
         "frame_width": None,
         "frame_height": None,
         "margin": 0,
         "spacing": 0,
         "scale": 1,
+        # The source art is arranged as a 4x4 sheet, but the poses do not sit
+        # inside perfectly even cells. These rectangles keep each source frame
+        # from clipping into the row above/below it.
+        "frame_rects": [
+            [
+                (121, 49, 148, 250),
+                (394, 50, 149, 249),
+                (678, 49, 150, 250),
+                (967, 50, 151, 249),
+            ],
+            [
+                (106, 363, 194, 230),
+                (354, 363, 213, 230),
+                (657, 363, 191, 232),
+                (939, 363, 211, 227),
+            ],
+            [
+                (86, 636, 197, 227),
+                (368, 636, 237, 227),
+                (668, 636, 240, 227),
+                (951, 636, 193, 227),
+            ],
+            [
+                (84, 886, 198, 260),
+                (355, 901, 198, 225),
+                (639, 918, 305, 261),
+                (936, 922, 212, 257),
+            ],
+        ],
         "target_size": (PLAYER_WIDTH, PLAYER_HEIGHT),
         "remove_light_background": True,
         "trim_transparent": True,
         "align": "bottom",
         # Row mapping:
-        # row 0 idle loops, row 1 run loops, row 2 shoot plays once,
+        # row 0 idle loops, row 2 shoot plays once,
         # row 3 frames 0-1 jump while airborne, row 3 frames 2-3 hurt once.
+        # The run animation uses player_running_sheet.png below. To assign a
+        # separate sheet to another animation, add a "sheet" block with its
+        # path/columns/rows to that animation config.
         "animations": {
             "idle": {"row": 0, "frames": [0, 1, 2, 3], "fps": 8, "loop": True},
-            "run": {"row": 1, "frames": [0, 1, 2, 3], "fps": 10, "loop": True},
+            "run": {
+                "sheet": {
+                    "path": "assets/images/player_running_sheet.png",
+                    "columns": 8,
+                    "rows": 1,
+                    "frame_width": None,
+                    "frame_height": None,
+                    "margin": 0,
+                    "spacing": 0,
+                },
+                "row": 0,
+                "frames": [0, 1, 2, 3, 4, 5, 6, 7],
+                "fps": 12,
+                "loop": True,
+            },
             "shoot": {"row": 2, "frames": [0, 1, 2, 3], "fps": 12, "loop": False},
             "jump": {"row": 3, "frames": [0, 1], "fps": 10, "loop": True},
             "hurt": {"row": 3, "frames": [2, 3], "fps": 10, "loop": False},
