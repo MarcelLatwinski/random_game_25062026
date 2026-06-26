@@ -19,12 +19,16 @@ from settings import (
     FLYING_HEIGHT,
     BULLET_WIDTH,
     BULLET_HEIGHT,
+    GROUND_Y,
+    SPRITE_SHEETS,
 )
+from animation import load_animation_set
 from player import Player
 from level_manager import LevelManager
 from upgrade_manager import UpgradeManager
 from ui import UI
 from platforms import Platform
+from platform_nav import PlatformGraph, DEBUG_PATHS
 
 GAME_STATES = [
     "MAIN_MENU",
@@ -43,39 +47,47 @@ class Game:
         self.clock = pygame.time.Clock()
         self.state = "MAIN_MENU"
         self.images = self.load_images()
-        self.platforms = [Platform(rect) for rect in PLATFORMS]
-        self.player = Player(620, 580, image=self.images.get("player"), bullet_image=self.images.get("bullet"))
+        self.platforms = [Platform(rect, idx) for idx, rect in enumerate(PLATFORMS)]
+        self.platform_graph = PlatformGraph(self.platforms)
+        self.player = Player(
+            620,
+            GROUND_Y - PLAYER_HEIGHT,
+            animations=self.images.get("player"),
+            bullet_animations=self.images.get("bullet"),
+        )
         self.level_manager = LevelManager()
         self.upgrade_manager = UpgradeManager()
         self.ui = UI()
         self.bullets = []
         self.last_mouse = (0, 0)
+        self.debug_font = pygame.font.SysFont(None, 20)
 
     def load_images(self):
         images = {}
-        expected_sizes = {
-            "player": (PLAYER_WIDTH, PLAYER_HEIGHT),
-            "walker_zombie": (WALKER_WIDTH, WALKER_HEIGHT),
-            "tank_zombie": (TANK_WIDTH, TANK_HEIGHT),
-            "flying_zombie": (FLYING_WIDTH, FLYING_HEIGHT),
-            "bullet": (BULLET_WIDTH, BULLET_HEIGHT),
-        }
         for key, path in IMAGE_PATHS.items():
             if os.path.exists(path):
                 try:
                     loaded = pygame.image.load(path).convert_alpha()
-                    expected = expected_sizes.get(key)
-                    if expected and loaded.get_size() != expected:
-                        loaded = pygame.transform.smoothscale(loaded, expected)
                     images[key] = loaded
                 except pygame.error:
                     images[key] = None
             else:
                 images[key] = None
+
+        for key, sheet_config in SPRITE_SHEETS.items():
+            try:
+                images[key] = load_animation_set(sheet_config)
+            except pygame.error:
+                images[key] = None
         return images
 
     def reset(self):
-        self.player = Player(620, 580, image=self.images.get("player"), bullet_image=self.images.get("bullet"))
+        self.player = Player(
+            620,
+            GROUND_Y - PLAYER_HEIGHT,
+            animations=self.images.get("player"),
+            bullet_animations=self.images.get("bullet"),
+        )
         self.level_manager.reset()
         self.bullets = []
         self.state = "MAIN_MENU"
@@ -123,11 +135,12 @@ class Game:
                     self.apply_upgrade_choice(choice_index)
 
     def handle_upgrade_click(self, mouse_pos):
-        card_width = 320
-        card_height = 180
-        spacing = 40
-        x_start = 120
-        y = 180
+        card_width = 440
+        card_height = 260
+        spacing = 60
+        total_width = len(self.upgrade_manager.current_choices) * card_width + (len(self.upgrade_manager.current_choices) - 1) * spacing
+        x_start = (SCREEN_WIDTH - total_width) // 2
+        y = 220
         for index in range(len(self.upgrade_manager.current_choices)):
             x = x_start + index * (card_width + spacing)
             card_rect = pygame.Rect(x, y, card_width, card_height)
@@ -135,6 +148,9 @@ class Game:
                 self.apply_upgrade_choice(index)
 
     def apply_upgrade_choice(self, choice_index):
+        if 0 <= choice_index < len(self.upgrade_manager.current_choices):
+            picked = self.upgrade_manager.current_choices[choice_index]
+            self.player.picked_upgrades.append(picked["name"])
         self.upgrade_manager.apply_upgrade(self.player, choice_index)
         if self.level_manager.next_level():
             self.state = "PLAYING"
@@ -144,9 +160,9 @@ class Game:
     def update(self, dt, now):
         if self.state == "PLAYING":
             keys = pygame.key.get_pressed()
-            self.player.update(keys, self.platforms, now)
-            self.level_manager.update(dt, self.platforms, self.player, self.images)
-            self.update_bullets()
+            self.player.update(keys, self.platforms, now, dt)
+            self.level_manager.update(dt, self.platforms, self.player, self.images, self.platform_graph)
+            self.update_bullets(dt)
             self.check_collisions(now)
             if self.player.health <= 0:
                 self.state = "GAME_OVER"
@@ -157,20 +173,24 @@ class Game:
                     self.upgrade_manager.pick_upgrades()
                     self.state = "UPGRADE_SELECT"
 
-    def update_bullets(self):
+    def update_bullets(self, dt):
         for bullet in list(self.bullets):
-            if not bullet.update():
+            if not bullet.update(self.platforms, dt):
                 self.bullets.remove(bullet)
 
     def check_collisions(self, now):
         for enemy in list(self.level_manager.active_enemies):
+            if getattr(enemy, "dead", False):
+                continue
             if enemy.rect.colliderect(self.player.rect):
+                enemy.start_attack()
                 self.player.apply_hurt(enemy.damage, now)
             for bullet in list(self.bullets):
+                if getattr(bullet, "impacting", False):
+                    continue
                 if enemy.rect.colliderect(bullet.rect):
                     enemy.take_damage(bullet.damage)
-                    if bullet in self.bullets:
-                        self.bullets.remove(bullet)
+                    bullet.start_impact()
                     break
 
     def draw(self):
@@ -201,6 +221,8 @@ class Game:
             self.screen.blit(bg, (0, 0))
         else:
             self.screen.fill(COLOR_BACKGROUND)
+
+        pygame.draw.circle(self.screen, (255, 255, 100), (SCREEN_WIDTH - 90, 90), 40)
 
         for platform in self.platforms:
             platform.draw(self.screen, image=self.images.get("platform"))

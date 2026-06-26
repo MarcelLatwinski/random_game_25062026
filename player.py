@@ -1,5 +1,7 @@
 import pygame
+from animation import AnimatedSprite
 from settings import (
+    SCREEN_WIDTH,
     PLAYER_WIDTH,
     PLAYER_HEIGHT,
     PLAYER_SPEED,
@@ -18,9 +20,11 @@ from settings import (
 from bullet import Bullet
 
 class Player:
-    def __init__(self, x, y, image=None, bullet_image=None):
+    def __init__(self, x, y, image=None, bullet_image=None, animations=None, bullet_animations=None):
         self.image = image
         self.bullet_image = bullet_image
+        self.animator = AnimatedSprite(animations, "idle") if animations else None
+        self.bullet_animations = bullet_animations
         self.rect = pygame.Rect(x, y, PLAYER_WIDTH, PLAYER_HEIGHT)
         self.vx = 0
         self.vy = 0
@@ -28,6 +32,8 @@ class Player:
         self.max_health = PLAYER_MAX_HEALTH
         self.health = PLAYER_START_HEALTH
         self.damage_multiplier = 1.0
+        self.picked_upgrades = []
+        self.facing_right = True
         self.fire_cooldown = PLAYER_FIRE_COOLDOWN
         self.bullet_speed = PLAYER_BULLET_SPEED
         self.speed = PLAYER_SPEED
@@ -52,7 +58,15 @@ class Player:
             return None
         direction = (dx / dist, dy / dist)
         self.next_fire = now + self.fire_cooldown
-        return Bullet(self.rect.center, direction, self.bullet_speed, self.damage, image=self.bullet_image)
+        self.play_action("shoot")
+        return Bullet(
+            self.rect.center,
+            direction,
+            self.bullet_speed,
+            self.damage,
+            image=self.bullet_image,
+            animations=self.bullet_animations,
+        )
 
     def apply_upgrade(self, effect_id):
         if effect_id == "bigger_heart":
@@ -75,8 +89,9 @@ class Player:
         if now >= self.hurt_timer:
             self.health -= amount
             self.hurt_timer = now + self.hurt_cooldown
+            self.play_action("hurt")
 
-    def update(self, keys, platforms, now):
+    def update(self, keys, platforms, now, dt=0):
         left = keys[pygame.K_a] or keys[pygame.K_LEFT]
         right = keys[pygame.K_d] or keys[pygame.K_RIGHT]
         self.vx = 0
@@ -89,6 +104,11 @@ class Player:
             self.vy = -self.jump_strength
             self.on_ground = False
 
+        if self.vx > 0:
+            self.facing_right = True
+        elif self.vx < 0:
+            self.facing_right = False
+
         self.rect.x += self.vx
         self.collide_horizontal(platforms)
 
@@ -100,8 +120,28 @@ class Player:
 
         if self.rect.left < 0:
             self.rect.left = 0
-        if self.rect.right > 1280:
-            self.rect.right = 1280
+        if self.rect.right > SCREEN_WIDTH:
+            self.rect.right = SCREEN_WIDTH
+
+        self.update_animation(dt)
+
+    def play_action(self, state):
+        if self.animator:
+            self.animator.play_once(state)
+
+    def update_animation(self, dt):
+        if not self.animator:
+            return
+
+        if not self.animator.is_playing_once():
+            if not self.on_ground:
+                self.animator.play("jump")
+            elif abs(self.vx) > 0:
+                self.animator.play("run")
+            else:
+                self.animator.play("idle")
+
+        self.animator.update(dt)
 
     def collide_horizontal(self, platforms):
         for platform in platforms:
@@ -123,8 +163,11 @@ class Player:
                     self.vy = 0
 
     def draw(self, surface):
-        if self.image:
-            surface.blit(self.image, self.rect)
+        image = self.animator.current_frame() if self.animator else self.image
+        if image:
+            if not self.facing_right:
+                image = pygame.transform.flip(image, True, False)
+            surface.blit(image, self.rect)
         else:
             color = self.color
             if self.hurt_timer > pygame.time.get_ticks() / 1000:

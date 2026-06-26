@@ -1,6 +1,6 @@
 import random
 import pygame
-from settings import LEVELS, SPAWN_INTERVAL_MIN, SPAWN_INTERVAL_MAX, LEFT_SPAWN_RANGE, RIGHT_SPAWN_RANGE
+from settings import LEVELS, SPAWN_INTERVAL_MIN, SPAWN_INTERVAL_MAX, LEFT_SPAWN_RANGE, RIGHT_SPAWN_RANGE, SCREEN_WIDTH
 from enemy import WalkerZombie, TankZombie, FlyingZombie
 
 class LevelManager:
@@ -29,39 +29,49 @@ class LevelManager:
         self.spawn_timer = 0
         self.active_enemies = []
 
-    def update(self, dt, platforms, player, images):
+    def update(self, dt, platforms, player, images, platform_graph):
         self.spawn_timer -= dt
         if self.spawn_plan and self.spawn_timer <= 0:
             enemy_type = self.spawn_plan.pop(0)
-            self.active_enemies.append(self.spawn_enemy(enemy_type, images))
+            enemy = self.spawn_enemy(enemy_type, images, platform_graph)
+            self.active_enemies.append(enemy)
             self.spawn_timer = random.uniform(SPAWN_INTERVAL_MIN, SPAWN_INTERVAL_MAX)
 
         for enemy in list(self.active_enemies):
             enemy.update(player, platforms, dt)
-            if enemy.hp <= 0:
+            if enemy.removable:
                 self.active_enemies.remove(enemy)
 
-    def spawn_enemy(self, enemy_type, images):
+    def spawn_enemy(self, enemy_type, images, platform_graph):
+        speed_factor = 1 + self.level_index * 0.05
         if enemy_type == "walker":
             x = random.randint(*LEFT_SPAWN_RANGE) if random.choice([True, False]) else random.randint(*RIGHT_SPAWN_RANGE)
             y = 0
-            return WalkerZombie(x, y, image=images.get("walker_zombie"))
+            enemy = WalkerZombie(x, y, animations=images.get("walker_zombie"))
+            enemy.speed = enemy.speed * speed_factor
+            enemy.platform_graph = platform_graph
+            return enemy
         if enemy_type == "tank":
             x = random.randint(*LEFT_SPAWN_RANGE) if random.choice([True, False]) else random.randint(*RIGHT_SPAWN_RANGE)
             y = 0
-            return TankZombie(x, y, image=images.get("tank_zombie"))
+            enemy = TankZombie(x, y, animations=images.get("tank_zombie"))
+            enemy.speed = enemy.speed * speed_factor
+            enemy.platform_graph = platform_graph
+            return enemy
         if enemy_type == "flying":
             spawn_side = random.choice(["top", "left", "right"])
             if spawn_side == "top":
-                x = random.randint(0, 1280)
+                x = random.randint(0, SCREEN_WIDTH)
                 y = -50
             elif spawn_side == "left":
                 x = -50
                 y = random.randint(0, 360)
             else:
-                x = 1330
+                x = SCREEN_WIDTH + 50
                 y = random.randint(0, 360)
-            return FlyingZombie(x, y, image=images.get("flying_zombie"))
+            enemy = FlyingZombie(x, y, animations=images.get("flying_zombie"))
+            enemy.speed = enemy.speed * speed_factor
+            return enemy
 
     def level_complete(self):
         return not self.spawn_plan and not self.active_enemies
