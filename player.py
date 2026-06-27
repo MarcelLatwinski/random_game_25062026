@@ -1,5 +1,5 @@
 import pygame
-from animation import AnimatedSprite
+from animation import AnimatedSprite, flipped_surface
 from settings import (
     SCREEN_WIDTH,
     PLAYER_WIDTH,
@@ -54,7 +54,9 @@ class Player:
         self.max_reserve_ammo = MAX_RESERVE_AMMO
         self.reload_until = 0
         self.reload_prompt_age = None
+        self.reload_font = pygame.font.SysFont("Segoe UI", 28, bold=True)
         self.color = COLOR_PLAYER
+        self.drop_requested = False
 
     @property
     def damage(self):
@@ -153,6 +155,7 @@ class Player:
     def update(self, keys, platforms, now, dt=0, world_width=SCREEN_WIDTH):
         left = keys[pygame.K_a] or keys[pygame.K_LEFT]
         right = keys[pygame.K_d] or keys[pygame.K_RIGHT]
+        self.drop_requested = bool(keys[pygame.K_s] or keys[pygame.K_DOWN])
         self.vx = 0
         if left:
             self.vx = -self.speed
@@ -162,6 +165,9 @@ class Player:
         if (keys[pygame.K_SPACE] or keys[pygame.K_w] or keys[pygame.K_UP]) and self.on_ground:
             self.vy = -self.jump_strength
             self.on_ground = False
+        elif self.drop_requested and self.on_ground and self.vy >= 0:
+            self.on_ground = False
+            self.vy = 4
 
         if self.vx > 0:
             self.facing_right = True
@@ -213,21 +219,26 @@ class Player:
 
     def collide_vertical(self, platforms):
         for platform in platforms:
-            if self.rect.colliderect(platform.rect):
-                if self.vy > 0:
-                    self.rect.bottom = platform.rect.top
-                    self.vy = 0
-                    self.on_ground = True
-                elif self.vy < 0:
-                    self.rect.top = platform.rect.bottom
-                    self.vy = 0
+            if not self.rect.colliderect(platform.rect):
+                continue
+
+            if self.drop_requested and self.vy >= 0 and getattr(platform, "drop_through", True):
+                return
+
+            if self.vy > 0:
+                self.rect.bottom = platform.rect.top
+                self.vy = 0
+                self.on_ground = True
+            elif self.vy < 0:
+                self.rect.top = platform.rect.bottom
+                self.vy = 0
 
     def draw(self, surface, camera_x=0):
         draw_rect = self.rect.move(-camera_x, 0)
         image = self.animator.current_frame() if self.animator else self.image
         if image:
             if not self.facing_right:
-                image = pygame.transform.flip(image, True, False)
+                image = flipped_surface(image)
             surface.blit(image, draw_rect)
         else:
             color = self.color
@@ -243,8 +254,7 @@ class Player:
         progress = min(1.0, self.reload_prompt_age / RELOAD_PROMPT_DURATION)
         alpha = max(0, int(255 * (1.0 - progress)))
         rise = int(RELOAD_PROMPT_RISE * progress)
-        font = pygame.font.SysFont("Segoe UI", 28, bold=True)
-        text_surface = font.render("RELOAD", True, (255, 50, 50))
+        text_surface = self.reload_font.render("RELOAD", True, (255, 50, 50))
         text_surface.set_alpha(alpha)
         text_x = draw_rect.centerx - text_surface.get_width() // 2
         text_y = draw_rect.top - 24 - rise

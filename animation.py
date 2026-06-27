@@ -3,6 +3,23 @@ import os
 import pygame
 
 
+_FLIPPED_SURFACE_CACHE = {}
+_SHEET_FRAME_CACHE = {}
+
+
+def flipped_surface(image):
+    """Return a cached left-facing copy instead of flipping every frame."""
+    if image is None:
+        return None
+
+    cache_key = id(image)
+    flipped = _FLIPPED_SURFACE_CACHE.get(cache_key)
+    if flipped is None:
+        flipped = pygame.transform.flip(image, True, False)
+        _FLIPPED_SURFACE_CACHE[cache_key] = flipped
+    return flipped
+
+
 class Animation:
     def __init__(self, frames, fps=10, loop=True, draw_offset=(0, 0)):
         self.frames = frames
@@ -141,8 +158,24 @@ def load_sheet_frames(sheet_config):
     if not os.path.exists(path):
         return None
 
+    cache_key = (
+        path,
+        sheet_config.get("columns"),
+        sheet_config.get("rows"),
+        sheet_config.get("margin", 0),
+        sheet_config.get("spacing", 0),
+        sheet_config.get("scale", 1),
+        sheet_config.get("remove_light_background", False),
+        sheet_config.get("trim_transparent", False),
+        repr(sheet_config.get("frame_rects")),
+    )
+    if cache_key in _SHEET_FRAME_CACHE:
+        return _SHEET_FRAME_CACHE[cache_key]
+
     sheet = pygame.image.load(path).convert_alpha()
-    return slice_sheet(sheet, sheet_config)
+    frames_by_row = slice_sheet(sheet, sheet_config)
+    _SHEET_FRAME_CACHE[cache_key] = frames_by_row
+    return frames_by_row
 
 
 def get_animation_source_config(sheet_config, animation_config):

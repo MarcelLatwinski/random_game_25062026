@@ -98,7 +98,7 @@ class UI:
 
         surface.blit(info_surface, (info_x, info_y))
 
-    def draw_loading(self, surface):
+    def draw_loading(self, surface, progress=0.0, status="Loading"):
         surface.fill(COLOR_BACKGROUND)
         self.draw_text(
             surface,
@@ -106,6 +106,23 @@ class UI:
             SCREEN_WIDTH // 2 - 140,
             SCREEN_HEIGHT // 2 - 36,
             size=64,
+            bold=True,
+        )
+        bar_width = 620
+        bar_height = 28
+        bar_x = (SCREEN_WIDTH - bar_width) // 2
+        bar_y = SCREEN_HEIGHT // 2 + 52
+        progress = max(0.0, min(1.0, progress))
+        fill_width = int(bar_width * progress)
+        pygame.draw.rect(surface, COLOR_UI_BG, (bar_x, bar_y, bar_width, bar_height))
+        pygame.draw.rect(surface, COLOR_HEALTH, (bar_x, bar_y, fill_width, bar_height))
+        pygame.draw.rect(surface, COLOR_TEXT, (bar_x, bar_y, bar_width, bar_height), 3)
+        self.draw_text(
+            surface,
+            status,
+            SCREEN_WIDTH // 2 - 220,
+            bar_y + 46,
+            size=28,
             bold=True,
         )
 

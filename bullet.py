@@ -1,6 +1,9 @@
 import pygame
-from animation import AnimatedSprite
+from animation import AnimatedSprite, flipped_surface
 from settings import SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BULLET, BULLET_WIDTH, BULLET_HEIGHT
+
+MAX_IMPACT_TIME = 0.35
+
 
 class Bullet:
     def __init__(self, center, direction, speed, damage, image=None, animations=None):
@@ -13,25 +16,19 @@ class Bullet:
         self.rect = pygame.Rect(0, 0, BULLET_WIDTH, BULLET_HEIGHT)
         self.rect.center = center
         self.impacting = False
+        self.impact_age = 0.0
         self.removable = False
 
     def update(self, platforms, dt=0, world_width=SCREEN_WIDTH):
         if self.impacting:
+            self.impact_age += dt
             self.update_animation(dt)
+            if self.impact_age >= MAX_IMPACT_TIME:
+                self.removable = True
             return not self.removable
 
         self.rect.x += self.vx
-        for platform in platforms:
-            if self.rect.colliderect(platform.rect):
-                self.start_impact()
-                self.update_animation(dt)
-                return not self.removable
         self.rect.y += self.vy
-        for platform in platforms:
-            if self.rect.colliderect(platform.rect):
-                self.start_impact()
-                self.update_animation(dt)
-                return not self.removable
 
         if not self.is_in_world(world_width):
             return False
@@ -44,6 +41,7 @@ class Bullet:
             return
 
         self.impacting = True
+        self.impact_age = 0.0
         self.vx = 0
         self.vy = 0
         if self.animator and self.animator.has_state("impact"):
@@ -74,7 +72,7 @@ class Bullet:
         image = self.animator.current_frame() if self.animator else self.image
         if image:
             if self.vx < 0:
-                image = pygame.transform.flip(image, True, False)
+                image = flipped_surface(image)
             surface.blit(image, draw_rect)
         else:
             pygame.draw.rect(surface, COLOR_BULLET, draw_rect)

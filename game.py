@@ -5,11 +5,23 @@ from settings import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
     FPS,
+    MAX_FRAME_DT,
     COLOR_BACKGROUND,
     COLOR_TEXT,
     SHOW_FPS_COUNTER,
+    DRAW_PROCEDURAL_DECORATIONS,
+    DRAW_PLATFORM_VISUALS,
+    DRAW_GROUND_PLATFORM_VISUAL,
+    DRAW_FLOOR_VISUAL,
+    DRAW_MARGIN,
+    COLLISION_QUERY_MARGIN,
+    BULLET_COLLISION_QUERY_MARGIN,
     IMAGE_PATHS,
     ENVIRONMENT_IMAGE_PATHS,
+    PLATFORM_ASSET_KEYS,
+    FLOOR_ASSET_KEY,
+    FLOOR_SURFACE_OFFSET_Y,
+    BACKGROUND_CUTOUT_KEYS,
     SPRITE_SHEETS,
     ENEMY_TYPE_CONFIGS,
     PICKUP_SPRITES,
@@ -18,7 +30,7 @@ from settings import (
     AMMO_DROP_CHANCE,
     HEALTH_DROP_CHANCE,
 )
-from animation import load_animation_set
+from animation import load_animation_set, flipped_surface
 from player import Player
 from level_manager import LevelManager
 from upgrade_manager import UpgradeManager
@@ -41,7 +53,10 @@ class Game:
     def __init__(self):
         pygame.display.init()
         pygame.font.init()
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        self.screen = pygame.display.set_mode(
+            (SCREEN_WIDTH, SCREEN_HEIGHT),
+            pygame.DOUBLEBUF,
+        )
         pygame.display.set_caption("Zombie Platform Shooter")
         self.clock = pygame.time.Clock()
         self.state = "MAIN_MENU"
@@ -49,8 +64,13 @@ class Game:
         self.scaled_background = None
         self.parallax_cache = {}
         self.loading_screen_drawn = False
+        self.loading_tasks = []
+        self.loading_task_index = 0
+        self.loading_status = "Preparing level"
         self.level_manager = LevelManager()
+        self.preloaded_sections = set()
         self.platforms = []
+        self.floor_platform = None
         self.platform_graph = None
         self.load_level_layout()
         self.player = self.create_player()
@@ -68,7 +88,18 @@ class Game:
             Platform(rect, idx)
             for idx, rect in enumerate(self.level_manager.platforms)
         ]
+        self.floor_platform = self.find_floor_platform()
         self.platform_graph = PlatformGraph(self.platforms)
+
+    def find_floor_platform(self):
+        for platform in self.platforms:
+            is_level_floor = (
+                platform.rect.width >= self.level_manager.level_width * 0.9
+                and platform.rect.top >= SCREEN_HEIGHT * 0.75
+            )
+            if is_level_floor:
+                return platform
+        return None
 
     def create_player(self):
         x, y = self.level_manager.player_start
@@ -97,7 +128,15 @@ class Game:
             self.load_animation(key)
         return self.images
 
-    def load_image(self, key, path, remove_light_pixels=False, trim_transparent=False):
+    def load_image(
+        self,
+        key,
+        path,
+        remove_light_pixels=False,
+        trim_transparent=False,
+        transparent_min_value=225,
+        transparent_channel_spread=36,
+    ):
         if key in self.images:
             return self.images[key]
 
@@ -106,7 +145,11 @@ class Game:
             try:
                 image = pygame.image.load(path).convert_alpha()
                 if remove_light_pixels:
-                    self.remove_near_white_pixels(image)
+                    self.remove_near_white_pixels(
+                        image,
+                        min_value=transparent_min_value,
+                        max_channel_spread=transparent_channel_spread,
+                    )
                 if trim_transparent:
                     image = self.trim_transparent_image(image)
             except pygame.error:
@@ -119,19 +162,30 @@ class Game:
 
     def load_environment_image(self, key):
         path = ENVIRONMENT_IMAGE_PATHS.get(key)
+        # Background 1 is a full skyline image, so it stays opaque. The middle
+        # and closest layers are cutout art, so near-white checkerboard pixels
+        # are cleaned into transparency. True PNG alpha is preserved by
+        # convert_alpha() for any future replacement art. The floor uses the
+        # same cleanup, but it is not trimmed because its top transparent space
+        # is what lets FLOOR_SURFACE_OFFSET_Y align the walkable concrete.
+        is_platform_sprite = key.startswith("platform_")
+        is_floor_sprite = key == FLOOR_ASSET_KEY
+        is_cutout_background = key in BACKGROUND_CUTOUT_KEYS
+        min_value = 205 if is_cutout_background or is_floor_sprite else 225
+        channel_spread = 46 if is_cutout_background or is_floor_sprite else 36
         return self.load_image(
             key,
             path,
-            remove_light_pixels=True,
-            trim_transparent=key.startswith("platform_"),
+            remove_light_pixels=is_platform_sprite or is_cutout_background or is_floor_sprite,
+            trim_transparent=is_platform_sprite,
+            transparent_min_value=min_value,
+            transparent_channel_spread=channel_spread,
         )
 
-    def remove_near_white_pixels(self, image):
-        # The supplied environment PNGs are RGB files with a light checkerboard
-        # baked in. Treat near-white, low-saturation pixels as transparent so
-        # backgrounds and platform edges blend with the world.
-        min_value = 235
-        max_channel_spread = 32
+    def remove_near_white_pixels(self, image, min_value=225, max_channel_spread=36):
+        # Some cutout sprites are RGB images with a fake transparency
+        # checkerboard baked in. Low-saturation bright pixels become transparent
+        # so the skyline can show through openings in background_2/background_3.
         width = image.get_width()
         height = image.get_height()
 
@@ -176,7 +230,7 @@ class Game:
         for key in ("player", "bullet"):
             self.load_animation(key)
 
-    def load_current_level_visual_assets(self):
+    def current_level_visual_asset_keys(self, section_names=None, section_limit=None):
         visual_keys = set()
 
         for layer in self.level_manager.background_layers:
@@ -184,16 +238,34 @@ class Game:
             if image_key:
                 visual_keys.add(image_key)
 
-        for platform_data in self.level_manager.platforms:
-            if isinstance(platform_data, dict) and platform_data.get("sprite"):
-                visual_keys.add(platform_data["sprite"])
+        if DRAW_FLOOR_VISUAL:
+            visual_keys.add(FLOOR_ASSET_KEY)
 
-        for decoration in self.level_manager.decorations:
-            sprite_key = decoration.get("sprite")
-            if sprite_key:
-                visual_keys.add(sprite_key)
+        relevant_sections = self.level_manager.sections
+        if section_names is not None:
+            relevant_sections = [
+                section for section in self.level_manager.sections
+                if section.get("name") in section_names
+            ]
+        elif section_limit is not None:
+            relevant_sections = self.level_manager.sections[:section_limit]
 
-        for key in sorted(visual_keys):
+        if DRAW_PLATFORM_VISUALS:
+            for section in relevant_sections:
+                for platform_data in section.get("platforms", []):
+                    if isinstance(platform_data, dict) and platform_data.get("sprite"):
+                        visual_keys.add(platform_data["sprite"])
+
+        for section in relevant_sections:
+            for decoration in section.get("decorations", []):
+                sprite_key = decoration.get("sprite")
+                if sprite_key:
+                    visual_keys.add(sprite_key)
+
+        return sorted(visual_keys)
+
+    def load_current_level_visual_assets(self):
+        for key in self.current_level_visual_asset_keys():
             if key in ENVIRONMENT_IMAGE_PATHS:
                 self.load_environment_image(key)
 
@@ -222,7 +294,7 @@ class Game:
             (config["draw_width"], config["draw_height"]),
         )
 
-    def load_current_level_enemy_assets(self):
+    def current_level_enemy_asset_keys(self, section_names=None, section_limit=None):
         keys = set()
 
         for config in ENEMY_TYPE_CONFIGS.values():
@@ -231,13 +303,25 @@ class Game:
                 if key:
                     keys.add(key)
 
-        for spawn_point in self.level_manager.enemy_spawn_points:
+        relevant_spawn_points = self.level_manager.enemy_spawn_points
+        if section_names is not None:
+            relevant_spawn_points = [
+                spawn_point for spawn_point in self.level_manager.enemy_spawn_points
+                if spawn_point.get("section") in section_names
+            ]
+        elif section_limit is not None:
+            relevant_spawn_points = self.level_manager.enemy_spawn_points[:section_limit]
+
+        for spawn_point in relevant_spawn_points:
             for key_name in ("animation_key", "spawn_sheet"):
                 key = spawn_point.get(key_name)
                 if key:
                     keys.add(key)
 
-        for key in sorted(keys):
+        return sorted(keys)
+
+    def load_current_level_enemy_assets(self):
+        for key in self.current_level_enemy_asset_keys():
             self.load_animation(key)
 
     def load_current_level_assets(self):
@@ -245,21 +329,145 @@ class Game:
         self.load_current_level_visual_assets()
         self.load_current_level_enemy_assets()
 
+    def add_loading_task(self, tasks, label, function, *args):
+        tasks.append((label, lambda function=function, args=args: function(*args)))
+
+    def prepare_start_loading_tasks(self):
+        self.level_manager.start_level()
+        self.load_level_layout()
+
+        # Each task runs on a separate loading update. That lets the loading
+        # screen repaint instead of freezing during one large asset load.
+        tasks = []
+        for key, path in IMAGE_PATHS.items():
+            self.add_loading_task(tasks, f"Loading {key}", self.load_image, key, path)
+
+        self.add_loading_task(tasks, "Preparing pickups", self.load_pickup_sprites)
+
+        queued_visual_keys = set()
+        if DRAW_FLOOR_VISUAL:
+            self.add_loading_task(
+                tasks,
+                f"Loading {FLOOR_ASSET_KEY}",
+                self.load_environment_image,
+                FLOOR_ASSET_KEY,
+            )
+            queued_visual_keys.add(FLOOR_ASSET_KEY)
+
+        if DRAW_PLATFORM_VISUALS:
+            for key in PLATFORM_ASSET_KEYS:
+                self.add_loading_task(tasks, f"Loading {key}", self.load_environment_image, key)
+                queued_visual_keys.add(key)
+
+        initial_section_names = [
+            section.get("name") for section in self.level_manager.sections[:1]
+            if section.get("name")
+        ]
+        for key in self.current_level_visual_asset_keys(section_names=initial_section_names):
+            if key in ENVIRONMENT_IMAGE_PATHS and key not in queued_visual_keys:
+                self.add_loading_task(tasks, f"Loading {key}", self.load_environment_image, key)
+
+        animation_keys = ["player", "bullet"]
+        for key in self.current_level_enemy_asset_keys(section_names=initial_section_names):
+            if key not in animation_keys:
+                animation_keys.append(key)
+        for key in animation_keys:
+            self.add_loading_task(tasks, f"Loading {key}", self.load_animation, key)
+
+        self.loading_tasks = tasks
+        self.loading_task_index = 0
+
+    def prepare_runtime_caches(self):
+        self.prepare_parallax_cache()
+
+    def prepare_flipped_animation_frames(self):
+        # Characters often face left. Pre-caching flipped frames avoids creating
+        # new images during draw calls later.
+        for image_group in self.images.values():
+            if not isinstance(image_group, dict):
+                continue
+            for animation in image_group.values():
+                for frame in getattr(animation, "frames", []):
+                    flipped_surface(frame)
+
+    def prepare_parallax_cache(self):
+        for layer in self.level_manager.background_layers:
+            image_key = layer.get("image")
+            image = self.images.get(image_key)
+            if image:
+                self.scaled_parallax_layer(image_key, image)
+
+    def prepare_platform_surfaces(self):
+        if not DRAW_PLATFORM_VISUALS:
+            return
+
+        for platform in self.platforms:
+            if not self.should_draw_platform_visual(platform):
+                continue
+            platform.prepare_surface(
+                image=self.images.get("platform"),
+                images=self.images,
+            )
+
+    def should_draw_platform_visual(self, platform):
+        if not DRAW_PLATFORM_VISUALS:
+            return False
+        if DRAW_GROUND_PLATFORM_VISUAL:
+            return True
+
+        # The first ground platform spans almost the whole level. Collision
+        # remains active, but its old map-like art stays hidden so the new
+        # backgrounds are the only large environment layer.
+        return platform.rect.width < self.level_manager.level_width * 0.9
+
     def request_start_game(self):
         self.state = "LOADING"
         self.loading_screen_drawn = False
+        self.loading_tasks = []
+        self.loading_task_index = 0
+        self.loading_status = "Preparing level"
 
     def start_game(self):
         self.level_manager.start_level()
         self.load_level_layout()
-        self.load_current_level_assets()
+        self.prepare_start_loading_tasks()
+        self.finish_start_game()
+
+    def finish_start_game(self):
         self.player = self.create_player()
         self.bullets = []
         self.pickups = []
         self.spawn_level_pickups()
         self.update_camera()
+        initial_section = self.level_manager.current_section_name(self.player.rect.centerx)
+        if initial_section:
+            self.preloaded_sections.add(initial_section)
         self.state = "PLAYING"
         self.loading_screen_drawn = False
+        self.loading_tasks = []
+        self.loading_task_index = 0
+
+    def update_loading(self):
+        if not self.loading_screen_drawn:
+            return
+
+        if not self.loading_tasks:
+            self.prepare_start_loading_tasks()
+            return
+
+        if self.loading_task_index < len(self.loading_tasks):
+            label, task = self.loading_tasks[self.loading_task_index]
+            self.loading_status = label
+            task()
+            self.loading_task_index += 1
+            return
+
+        self.finish_start_game()
+
+    def loading_progress(self):
+        if not self.loading_tasks:
+            return 0.0
+        return self.loading_task_index / len(self.loading_tasks)
 
     def reset(self):
         self.level_manager.reset()
@@ -270,11 +478,16 @@ class Game:
         self.update_camera()
         self.state = "MAIN_MENU"
         self.loading_screen_drawn = False
+        self.loading_tasks = []
+        self.loading_task_index = 0
+        self.loading_status = "Preparing level"
 
     def run(self):
         running = True
         while running:
-            dt = self.clock.tick(FPS) / 1000
+            # If a frame hitches, cap dt so animations and physics do not try
+            # to process a huge catch-up step all at once.
+            dt = min(self.clock.tick(FPS) / 1000, MAX_FRAME_DT)
             now = pygame.time.get_ticks() / 1000
             self.handle_events(now)
             self.update(dt, now)
@@ -338,6 +551,7 @@ class Game:
         if self.level_manager.next_level():
             self.load_level_layout()
             self.load_current_level_assets()
+            self.prepare_runtime_caches()
             self.reset_player_for_level()
             self.bullets = []
             self.pickups = []
@@ -354,15 +568,38 @@ class Game:
         target_x = self.player.rect.centerx - SCREEN_WIDTH // 2
         self.camera_x = max(0, min(target_x, max_camera_x))
 
+    def is_world_rect_visible(self, rect, margin=DRAW_MARGIN):
+        # Drawing off-screen objects wastes time. The margin prevents pop-in at
+        # the screen edge while still skipping far-away objects.
+        return (
+            rect.right >= self.camera_x - margin
+            and rect.left <= self.camera_x + SCREEN_WIDTH + margin
+            and rect.bottom >= -margin
+            and rect.top <= SCREEN_HEIGHT + margin
+        )
+
+    def platforms_near_rect(self, rect, padding=COLLISION_QUERY_MARGIN):
+        # The player and bullets only need to collide with platforms close to
+        # their current x position, not every platform in the whole level.
+        left = rect.left - padding
+        right = rect.right + padding
+        nearby = [
+            platform
+            for platform in self.platforms
+            if platform.rect.right >= left and platform.rect.left <= right
+        ]
+        return nearby or self.platforms
+
     def update(self, dt, now):
         if self.state == "LOADING":
-            if self.loading_screen_drawn:
-                self.start_game()
+            self.update_loading()
             return
 
         if self.state == "PLAYING":
             keys = pygame.key.get_pressed()
-            self.player.update(keys, self.platforms, now, dt, self.level_manager.level_width)
+            player_platforms = self.platforms_near_rect(self.player.rect)
+            self.player.update(keys, player_platforms, now, dt, self.level_manager.level_width)
+            self.ensure_section_assets_loaded()
             self.update_camera()
             removed_enemies = self.level_manager.update(
                 dt,
@@ -384,10 +621,39 @@ class Game:
                     self.upgrade_manager.pick_upgrades()
                     self.state = "UPGRADE_SELECT"
 
+    def ensure_section_assets_loaded(self):
+        if self.state != "PLAYING":
+            return
+
+        section_name = self.level_manager.current_section_name(self.player.rect.centerx)
+        if not section_name or section_name in self.preloaded_sections:
+            return
+
+        self.preloaded_sections.add(section_name)
+        for key in self.current_level_visual_asset_keys(section_names=[section_name]):
+            if key in ENVIRONMENT_IMAGE_PATHS:
+                self.load_environment_image(key)
+
+        animation_keys = ["player", "bullet"]
+        for key in self.current_level_enemy_asset_keys(section_names=[section_name]):
+            if key not in animation_keys:
+                animation_keys.append(key)
+        for key in animation_keys:
+            self.load_animation(key)
+
     def update_bullets(self, dt):
-        for bullet in list(self.bullets):
-            if not bullet.update(self.platforms, dt, self.level_manager.level_width):
-                self.bullets.remove(bullet)
+        for index in range(len(self.bullets) - 1, -1, -1):
+            bullet = self.bullets[index]
+            if not self.is_world_rect_visible(bullet.rect, margin=BULLET_COLLISION_QUERY_MARGIN):
+                del self.bullets[index]
+                continue
+
+            bullet_platforms = self.platforms_near_rect(
+                bullet.rect,
+                padding=BULLET_COLLISION_QUERY_MARGIN,
+            )
+            if not bullet.update(bullet_platforms, dt, self.level_manager.level_width):
+                del self.bullets[index]
 
     def spawn_pickups_from_removed_enemies(self, enemies):
         for enemy in enemies:
@@ -436,35 +702,53 @@ class Game:
         )
 
     def update_pickups(self):
-        for pickup in list(self.pickups):
+        for index in range(len(self.pickups) - 1, -1, -1):
+            pickup = self.pickups[index]
+            if not self.is_world_rect_visible(pickup.rect, margin=DRAW_MARGIN):
+                continue
+
             pickup.update()
             if (
                 pickup.check_collision_with_player(self.player)
                 and pickup.collect(self.player)
             ):
-                self.pickups.remove(pickup)
+                del self.pickups[index]
 
     def check_collisions(self, now):
-        for enemy in list(self.level_manager.active_enemies):
+        for enemy in self.level_manager.active_enemies:
             if getattr(enemy, "dead", False) or not enemy.is_active():
                 continue
             if enemy.rect.colliderect(self.player.rect):
                 enemy.start_attack()
                 self.player.apply_hurt(enemy.damage, now)
-            for bullet in list(self.bullets):
-                if getattr(bullet, "impacting", False):
+            for bullet in self.bullets:
+                if getattr(bullet, "impacting", False) or getattr(bullet, "removable", False):
+                    continue
+                if not self.rects_near_for_collision(enemy.rect, bullet.rect):
                     continue
                 if enemy.rect.colliderect(bullet.rect):
                     enemy.take_damage(bullet.damage)
                     bullet.start_impact()
                     break
 
+    def rects_near_for_collision(self, rect_a, rect_b, padding=80):
+        return (
+            rect_a.right + padding >= rect_b.left
+            and rect_a.left - padding <= rect_b.right
+            and rect_a.bottom + padding >= rect_b.top
+            and rect_a.top - padding <= rect_b.bottom
+        )
+
     def draw(self):
         if self.state == "MAIN_MENU":
             self.ui.draw_main_menu(self.screen)
             return
         if self.state == "LOADING":
-            self.ui.draw_loading(self.screen)
+            self.ui.draw_loading(
+                self.screen,
+                progress=self.loading_progress(),
+                status=self.loading_status,
+            )
             self.loading_screen_drawn = True
             return
         if self.state == "PAUSED":
@@ -489,8 +773,11 @@ class Game:
         self.screen.fill((22, 27, 26))
         drew_layer = False
 
-        # Each layer repeats horizontally. The camera position multiplied by
-        # the layer speed creates the parallax drift.
+        # The old four-layer background setup is replaced by the three entries
+        # in settings.BACKGROUND_LAYERS:
+        # background_1 = far skyline, background_2 = ruined cutout structure,
+        # background_3 = closest detail strip. They are drawn separately, not
+        # flattened, so transparent openings in layers 2/3 reveal layer 1.
         for layer in self.level_manager.background_layers:
             image_key = layer.get("image")
             image = self.images.get(image_key)
@@ -499,20 +786,20 @@ class Game:
 
             scaled = self.scaled_parallax_layer(image_key, image)
             tile_width = scaled.get_width()
+            # Camera x times layer speed creates parallax. Slow layers drift
+            # gently in the distance; faster layers feel closer to the player.
             speed = layer.get("speed", 1.0)
-            x = -(self.camera_x * speed) % tile_width
-            x -= tile_width
+            x = -int((self.camera_x * speed) % tile_width)
+            # Only draw enough copies to cover the screen. The old loop always
+            # drew one extra copy on the left when x was already 0.
+            copy_count = (SCREEN_WIDTH - x + tile_width - 1) // tile_width
 
-            while x < SCREEN_WIDTH:
-                self.screen.blit(scaled, (round(x), 0))
-                x += tile_width
+            for copy_index in range(copy_count):
+                self.screen.blit(scaled, (x + copy_index * tile_width, 0))
             drew_layer = True
 
         if not drew_layer:
-            if self.scaled_background:
-                self.screen.blit(self.scaled_background, (0, 0))
-            else:
-                self.screen.fill(COLOR_BACKGROUND)
+            self.screen.fill(COLOR_BACKGROUND)
 
     def scaled_parallax_layer(self, key, image):
         cache_key = (key, id(image), SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -525,6 +812,42 @@ class Game:
         self.parallax_cache[cache_key] = scaled
         return scaled
 
+    def draw_floor(self):
+        if not DRAW_FLOOR_VISUAL or not self.floor_platform:
+            return
+
+        floor_image = self.images.get(FLOOR_ASSET_KEY)
+        if not floor_image:
+            return
+
+        tile_width = floor_image.get_width()
+        if tile_width <= 0:
+            return
+
+        floor_rect = self.floor_platform.rect
+        # The ground collision line is floor_rect.top. The sprite is drawn above
+        # that line so the concrete surface inside the PNG lines up with where
+        # the player and zombies actually stand.
+        floor_sprite_y = floor_rect.top - FLOOR_SURFACE_OFFSET_Y
+        visible_world_left = max(floor_rect.left, self.camera_x - DRAW_MARGIN)
+        visible_world_right = min(
+            floor_rect.right,
+            self.camera_x + SCREEN_WIDTH + DRAW_MARGIN,
+        )
+        if visible_world_left >= visible_world_right:
+            return
+
+        # The floor PNG is not stretched. We repeat the original tile across the
+        # level, but only blit the copies close to the camera.
+        first_tile = max(0, (visible_world_left - floor_rect.left) // tile_width)
+        tile_world_x = floor_rect.left + first_tile * tile_width
+        while tile_world_x < visible_world_right:
+            self.screen.blit(
+                floor_image,
+                (round(tile_world_x - self.camera_x), floor_sprite_y),
+            )
+            tile_world_x += tile_width
+
     def draw_decorations(self, layer="back"):
         for decoration in self.level_manager.decorations:
             decoration_layer = decoration.get("layer", "back")
@@ -534,14 +857,17 @@ class Game:
                 continue
 
             parallax = decoration.get("parallax", 1.0)
+            screen_x = round(decoration["x"] - self.camera_x * parallax)
+            width = decoration["width"]
+            if screen_x + width < -DRAW_MARGIN or screen_x > SCREEN_WIDTH + DRAW_MARGIN:
+                continue
+
             rect = pygame.Rect(
-                round(decoration["x"] - self.camera_x * parallax),
+                screen_x,
                 decoration["y"],
-                decoration["width"],
+                width,
                 decoration["height"],
             )
-            if rect.right < -120 or rect.left > SCREEN_WIDTH + 120:
-                continue
             self.draw_decoration(decoration.get("type", "rubble"), rect)
 
     def draw_decoration(self, kind, rect):
@@ -690,24 +1016,46 @@ class Game:
 
     def draw_gameplay(self):
         self.draw_parallax_backgrounds()
-        self.draw_decorations(layer="back")
 
-        for platform in self.platforms:
-            platform.draw(
-                self.screen,
-                image=self.images.get("platform"),
-                images=self.images,
-                camera_x=self.camera_x,
-            )
+        # The bottom floor is only visual. Collision still comes from the simple
+        # ground platform rectangle, so the transparent space in floor.png never
+        # blocks the player, zombies, bullets, or pickups.
+        self.draw_floor()
+
+        # The new background art already contains the environmental detail.
+        # Keeping old procedural decorations off prevents extra random-looking
+        # rectangles/lines from being drawn over the supplied backgrounds.
+        if DRAW_PROCEDURAL_DECORATIONS:
+            self.draw_decorations(layer="back")
+
+        if DRAW_PLATFORM_VISUALS:
+            for platform in self.platforms:
+                if not self.should_draw_platform_visual(platform):
+                    continue
+                if not self.is_world_rect_visible(platform.rect):
+                    continue
+                platform.draw(
+                    self.screen,
+                    image=self.images.get("platform"),
+                    images=self.images,
+                    camera_x=self.camera_x,
+                )
 
         self.draw_exit()
-        self.draw_decorations(layer="front")
+        if DRAW_PROCEDURAL_DECORATIONS:
+            self.draw_decorations(layer="front")
         for pickup in self.pickups:
+            if not self.is_world_rect_visible(pickup.rect):
+                continue
             pickup.draw(self.screen, camera_x=self.camera_x)
         self.player.draw(self.screen, camera_x=self.camera_x)
         for enemy in self.level_manager.active_enemies:
+            if not self.is_world_rect_visible(enemy.rect):
+                continue
             enemy.draw(self.screen, camera_x=self.camera_x)
         for bullet in self.bullets:
+            if not self.is_world_rect_visible(bullet.rect):
+                continue
             bullet.draw(self.screen, camera_x=self.camera_x)
 
         if DEBUG_PATHS:
@@ -719,6 +1067,10 @@ class Game:
             self.ui.draw_fps_counter(self.screen, self.clock.get_fps())
 
     def draw_exit(self):
-        exit_rect = self.level_manager.exit_rect().move(-self.camera_x, 0)
+        exit_rect = self.level_manager.exit_rect()
+        if not self.is_world_rect_visible(exit_rect):
+            return
+
+        exit_rect = exit_rect.move(-self.camera_x, 0)
         pygame.draw.rect(self.screen, (80, 220, 120), exit_rect)
         pygame.draw.rect(self.screen, COLOR_TEXT, exit_rect, 4)

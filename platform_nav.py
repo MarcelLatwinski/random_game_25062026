@@ -2,12 +2,15 @@ import heapq
 import math
 import pygame
 
+from settings import GRAVITY, PLAYER_JUMP_STRENGTH
+
 DEBUG_PATHS = False
 
-WALKER_MAX_JUMP_X = 240
-WALKER_MAX_JUMP_Y = 290
-TANK_MAX_JUMP_X = 190
-TANK_MAX_JUMP_Y = 280
+JUMP_HEIGHT_PX = int(round((PLAYER_JUMP_STRENGTH ** 2) / (2 * GRAVITY)))
+WALKER_MAX_JUMP_X = 360
+WALKER_MAX_JUMP_Y = max(340, int(round(JUMP_HEIGHT_PX * 0.9)))
+TANK_MAX_JUMP_X = 300
+TANK_MAX_JUMP_Y = max(320, int(round(JUMP_HEIGHT_PX * 0.86)))
 
 WALK_COST = 1.0
 DROP_COST = 0.8

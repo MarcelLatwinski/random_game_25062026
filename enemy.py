@@ -1,6 +1,6 @@
 import pygame
 import math
-from animation import AnimatedSprite
+from animation import AnimatedSprite, flipped_surface
 from settings import (
     GRAVITY,
     MAX_FALL_SPEED,
@@ -189,7 +189,7 @@ class Enemy:
             )
             draw_rect = draw_rect.move(offset_x, offset_y)
             if not self.facing_right:
-                image = pygame.transform.flip(image, True, False)
+                image = flipped_surface(image)
             surface.blit(image, draw_rect)
         else:
             pygame.draw.rect(surface, self.color, draw_rect)

@@ -4,6 +4,7 @@ SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 FPS = 60
 SHOW_FPS_COUNTER = True
+MAX_FRAME_DT = 1 / 20
 
 PLAYER_MAX_HEALTH = 100
 PLAYER_START_HEALTH = 100
@@ -58,6 +59,7 @@ FLYING_WIDTH = scaled_character_size(76)
 FLYING_HEIGHT = scaled_character_size(76)
 
 GROUND_Y = 990
+GROUND_COLLISION_HEIGHT = SCREEN_HEIGHT - GROUND_Y
 
 # This is the shared side-scrolling map used by every level.
 # Add more width here if you want a longer left-to-right level.
@@ -80,7 +82,6 @@ BACKGROUND_ASSET_KEYS = (
     "background_1",
     "background_2",
     "background_3",
-    "background_4",
 )
 PLATFORM_ASSET_KEYS = (
     "platform_1",
@@ -89,6 +90,7 @@ PLATFORM_ASSET_KEYS = (
     "platform_4",
     "platform_5",
 )
+FLOOR_ASSET_KEY = "floor"
 
 
 def find_image_asset(asset_name):
@@ -102,22 +104,53 @@ def find_image_asset(asset_name):
 
 ENVIRONMENT_IMAGE_PATHS = {
     asset_name: find_image_asset(asset_name)
-    for asset_name in BACKGROUND_ASSET_KEYS + PLATFORM_ASSET_KEYS
+    for asset_name in BACKGROUND_ASSET_KEYS + PLATFORM_ASSET_KEYS + (FLOOR_ASSET_KEY,)
 }
 
-# Background layers are decorative only. Parallax speed is multiplied by the
-# camera x position: lower values drift slowly in the distance, higher values
-# stay closer to the player and move faster.
+# These three images replace the old four-background setup.
+# To use better art later, keep these same filenames or change the names here.
+# To tweak parallax later, edit the speed values: smaller is farther away,
+# larger is closer to the camera.
 BACKGROUND_LAYERS = [
-    {"image": "background_1", "speed": 0.15},
-    {"image": "background_2", "speed": 0.30},
-    {"image": "background_3", "speed": 0.50},
-    {"image": "background_4", "speed": 0.75},
+    {"image": "background_1", "speed": 0.15},  # far skyline, slowest
+    {"image": "background_2", "speed": 0.40},  # ruined structure, middle speed
+    {"image": "background_3", "speed": 0.70},  # close detail strip, fastest
 ]
+
+# These RGB files were exported with a fake checkerboard background. The loader
+# turns the near-white checkerboard pixels transparent while preserving any real
+# alpha channel if future versions are saved with transparency.
+BACKGROUND_CUTOUT_KEYS = ("background_2", "background_3")
+
+# Keep this off when using full background artwork. The old procedural
+# decorations draw extra rectangles and lines over the scene, which can look
+# like random background artifacts.
+DRAW_PROCEDURAL_DECORATIONS = False
+
+# Draw the actual gameplay platform sprites. This is separate from the giant
+# full-level ground visual below, which can look like an old map underlay.
+DRAW_PLATFORM_VISUALS = True
+DRAW_GROUND_PLATFORM_VISUAL = False
+DRAW_PLATFORM_COLLISION_MARKERS = False
+DRAW_FLOOR_VISUAL = True
+
+# The bottom floor's collision still starts at GROUND_Y. The new floor PNG has
+# transparent/fake-transparent space above the concrete, so it is drawn this
+# many pixels above the collision line. If the player floats above the floor,
+# increase this value. If the player sinks into the floor, decrease it.
+FLOOR_SURFACE_OFFSET_Y = 204
 
 # Spawn points wake up when they are this far ahead of the player.
 # The points themselves are world positions, so they do not move with the camera.
 SPAWN_ACTIVATION_DISTANCE = 800
+
+# Small performance helpers. These keep drawing and collision checks focused on
+# the part of the level the player can actually see or touch soon.
+DRAW_MARGIN = 220
+COLLISION_QUERY_MARGIN = 320
+BULLET_COLLISION_QUERY_MARGIN = 140
+ENEMY_PLATFORM_QUERY_MARGIN = 1100
+ENEMY_AI_ACTIVE_DISTANCE = SCREEN_WIDTH + 900
 
 # Later levels reuse the same map and spawn list, then scale enemies a little.
 ENEMY_SPEED_SCALE_PER_LEVEL = 0.06
@@ -179,7 +212,7 @@ ENEMY_TYPE_CONFIGS = {
 # Move platforms later by editing the x, y, width, and height values below.
 # Add more chunks by appending another section dict with platforms,
 # decorations, enemy_spawns, and pickups.
-def platform(x, y, width, height, sprite, visual_height=None):
+def platform(x, y, width, height, sprite, visual_height=None, drop_through=True):
     return {
         "x": x,
         "y": y,
@@ -188,7 +221,18 @@ def platform(x, y, width, height, sprite, visual_height=None):
         "sprite": sprite,
         "visual_height": visual_height,
         "collidable": True,
+        "drop_through": drop_through,
     }
+
+
+def jump_height_pixels():
+    return int(round((PLAYER_JUMP_STRENGTH ** 2) / (2 * GRAVITY)))
+
+
+def platform_from_layer(x, width, layer, sprite, visual_height=None, height=36, variation=0):
+    ratio = 0.8 if layer == 0 else 1.6
+    base_y = GROUND_Y - height - int(round(jump_height_pixels() * ratio))
+    return platform(x, base_y + variation, width, height, sprite, visual_height=visual_height)
 
 
 def decoration(kind, x, y, width, height, layer="back"):
@@ -234,9 +278,19 @@ LEVEL_SECTIONS = [
         "start_x": 0,
         "end_x": 1200,
         "platforms": [
-            platform(0, GROUND_Y, LEVEL_WIDTH, 90, "platform_4", visual_height=150),
-            platform(360, 875, 280, 36, "platform_1", visual_height=108),
-            platform(740, 835, 320, 36, "platform_2", visual_height=112),
+            # This is the simple collision rectangle for the bottom floor. The
+            # PNG art is drawn separately in game.py so the transparent area
+            # above the concrete never becomes physical collision.
+            platform(
+                0,
+                GROUND_Y,
+                LEVEL_WIDTH,
+                GROUND_COLLISION_HEIGHT,
+                None,
+                drop_through=False,
+            ),
+            platform_from_layer(430, 300, 0, "platform_1", visual_height=112, variation=10),
+            platform_from_layer(800, 320, 1, "platform_2", visual_height=116, variation=-12),
         ],
         "decorations": [
             decoration("broken_floor", 260, 950, 250, 34),
@@ -258,9 +312,9 @@ LEVEL_SECTIONS = [
         "start_x": 1200,
         "end_x": 2500,
         "platforms": [
-            platform(1300, 835, 440, 36, "platform_3", visual_height=120),
-            platform(1840, 790, 430, 36, "platform_1", visual_height=118),
-            platform(2240, 850, 480, 36, "platform_5", visual_height=125),
+            platform_from_layer(1320, 320, 0, "platform_3", visual_height=120, variation=8),
+            platform_from_layer(1800, 340, 1, "platform_1", visual_height=118, variation=-16),
+            platform_from_layer(2200, 280, 0, "platform_5", visual_height=124, variation=14),
         ],
         "decorations": [
             decoration("broken_desk", 1340, 914, 180, 76),
@@ -285,10 +339,10 @@ LEVEL_SECTIONS = [
         "start_x": 2500,
         "end_x": 3850,
         "platforms": [
-            platform(2660, 860, 310, 36, "platform_2", visual_height=118),
-            platform(3030, 770, 300, 36, "platform_3", visual_height=112),
-            platform(3430, 850, 360, 36, "platform_1", visual_height=116),
-            platform(3760, 735, 300, 36, "platform_5", visual_height=120),
+            platform_from_layer(2660, 300, 0, "platform_2", visual_height=118, variation=12),
+            platform_from_layer(3080, 290, 1, "platform_3", visual_height=112, variation=-18),
+            platform_from_layer(3460, 300, 0, "platform_1", visual_height=116, variation=10),
+            platform_from_layer(3840, 260, 1, "platform_5", visual_height=120, variation=-14),
         ],
         "decorations": [
             decoration("broken_floor", 2580, 952, 280, 36),
@@ -313,9 +367,9 @@ LEVEL_SECTIONS = [
         "start_x": 3850,
         "end_x": 5300,
         "platforms": [
-            platform(4020, 800, 460, 36, "platform_5", visual_height=132),
-            platform(4540, 690, 360, 36, "platform_4", visual_height=130),
-            platform(4970, 820, 500, 36, "platform_2", visual_height=132),
+            platform_from_layer(4020, 320, 0, "platform_5", visual_height=132, variation=8),
+            platform_from_layer(4580, 300, 1, "platform_4", visual_height=130, variation=-20),
+            platform_from_layer(5000, 280, 0, "platform_2", visual_height=132, variation=12),
         ],
         "decorations": [
             decoration("vines", 3960, 520, 120, 330, layer="front"),
@@ -341,11 +395,11 @@ LEVEL_SECTIONS = [
         "start_x": 5300,
         "end_x": 6600,
         "platforms": [
-            platform(5380, 870, 300, 36, "platform_1", visual_height=116),
-            platform(5750, 760, 280, 36, "platform_3", visual_height=112),
-            platform(5420, 640, 300, 36, "platform_2", visual_height=112),
-            platform(5860, 520, 320, 36, "platform_4", visual_height=120),
-            platform(6250, 700, 350, 36, "platform_5", visual_height=120),
+            platform_from_layer(5340, 220, 0, "platform_1", visual_height=116, variation=14),
+            platform_from_layer(5680, 220, 1, "platform_3", visual_height=112, variation=-12),
+            platform_from_layer(6020, 220, 0, "platform_2", visual_height=112, variation=10),
+            platform_from_layer(6340, 220, 1, "platform_4", visual_height=120, variation=-16),
+            platform_from_layer(6540, 220, 0, "platform_5", visual_height=120, variation=8),
         ],
         "decorations": [
             decoration("elevator_door", 5320, 700, 180, 290),
@@ -371,10 +425,10 @@ LEVEL_SECTIONS = [
         "start_x": 6600,
         "end_x": 8100,
         "platforms": [
-            platform(6680, 850, 380, 36, "platform_1", visual_height=118),
-            platform(7130, 760, 340, 36, "platform_2", visual_height=112),
-            platform(7520, 850, 390, 36, "platform_3", visual_height=118),
-            platform(7860, 880, 540, 36, "platform_5", visual_height=130),
+            platform_from_layer(6680, 300, 0, "platform_1", visual_height=118, variation=10),
+            platform_from_layer(7160, 280, 1, "platform_2", visual_height=112, variation=-18),
+            platform_from_layer(7560, 320, 0, "platform_3", visual_height=118, variation=8),
+            platform_from_layer(7900, 300, 1, "platform_5", visual_height=130, variation=-14),
         ],
         "decorations": [
             decoration("shattered_window", 6660, 530, 280, 320),
@@ -400,9 +454,9 @@ LEVEL_SECTIONS = [
         "start_x": 8100,
         "end_x": LEVEL_WIDTH,
         "platforms": [
-            platform(8340, 810, 430, 36, "platform_4", visual_height=122),
-            platform(8870, 730, 460, 36, "platform_1", visual_height=126),
-            platform(9370, 830, 360, 36, "platform_2", visual_height=118),
+            platform_from_layer(8340, 320, 0, "platform_4", visual_height=122, variation=12),
+            platform_from_layer(8840, 320, 1, "platform_1", visual_height=126, variation=-16),
+            platform_from_layer(9340, 300, 0, "platform_2", visual_height=118, variation=10),
         ],
         "decorations": [
             decoration("rooftop_antenna", 8240, 700, 80, 290, layer="front"),
@@ -505,8 +559,6 @@ UPGRADES = [
 ]
 
 IMAGE_PATHS = {
-    "platform": "assets/images/platform.png",
-    "background": "assets/images/background.png",
     "pickup_sheet": "assets/images/ammo_health_kit.png",
 }
 

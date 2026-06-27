@@ -13,6 +13,8 @@ from settings import (
     DECORATIONS,
     ENEMY_TYPE_CONFIGS,
     SPAWN_ACTIVATION_DISTANCE,
+    ENEMY_AI_ACTIVE_DISTANCE,
+    ENEMY_PLATFORM_QUERY_MARGIN,
     ENEMY_SPEED_SCALE_PER_LEVEL,
     ENEMY_HEALTH_SCALE_PER_LEVEL,
 )
@@ -35,6 +37,7 @@ class LevelManager:
         self.decorations = []
         self.pickup_spawn_points = []
         self.enemy_spawn_points = []
+        self.next_spawn_index = 0
         self.active_enemies = []
         self.start_level()
 
@@ -77,6 +80,7 @@ class LevelManager:
 
         # Spawn points reset every level, so each point can fire once again.
         self.enemy_spawn_points = self.build_spawn_points()
+        self.next_spawn_index = 0
         self.active_enemies = []
 
     def collect_section_items(self, key, fallback=None):
@@ -110,7 +114,7 @@ class LevelManager:
 
             spawn_points.append(self.build_spawn_point(template))
 
-        return sorted(spawn_points, key=lambda point: point["x"])
+        return sorted(spawn_points, key=lambda point: point["trigger_x"])
 
     def build_spawn_point(self, template):
         spawn_point = {
@@ -138,6 +142,11 @@ class LevelManager:
             if key in type_config and key not in spawn_point:
                 spawn_point[key] = type_config[key]
 
+        trigger_distance = spawn_point.get("trigger_distance")
+        if trigger_distance is None:
+            trigger_distance = SPAWN_ACTIVATION_DISTANCE
+        spawn_point["trigger_distance"] = trigger_distance
+        spawn_point["trigger_x"] = spawn_point["x"] - trigger_distance
         spawn_point["spawned"] = False
         return spawn_point
 
@@ -162,26 +171,28 @@ class LevelManager:
     def update(self, dt, platforms, player, images, platform_graph):
         self.activate_spawn_points(player, images, platform_graph)
         removed_enemies = []
+        active_section = self.current_section_name(player.rect.centerx)
 
-        for enemy in list(self.active_enemies):
-            enemy.update(player, platforms, dt)
+        for index in range(len(self.active_enemies) - 1, -1, -1):
+            enemy = self.active_enemies[index]
+            if self.should_update_enemy(enemy, player, active_section):
+                nearby_platforms = self.nearby_platforms_for_enemy(enemy, player, platforms)
+                enemy.update(player, nearby_platforms, dt)
+            else:
+                self.pause_far_enemy(enemy)
             if enemy.removable:
-                self.active_enemies.remove(enemy)
+                del self.active_enemies[index]
                 removed_enemies.append(enemy)
 
         return removed_enemies
 
     def activate_spawn_points(self, player, images, platform_graph):
-        for spawn_point in self.enemy_spawn_points:
-            if spawn_point["spawned"]:
-                continue
-            trigger_distance = spawn_point.get(
-                "trigger_distance",
-                SPAWN_ACTIVATION_DISTANCE,
-            )
-            activation_x = player.rect.centerx + trigger_distance
-            if spawn_point["x"] > activation_x:
-                continue
+        # Spawn points are sorted by trigger_x, so the game only checks the next
+        # unspawned point instead of scanning the whole level every frame.
+        while self.next_spawn_index < len(self.enemy_spawn_points):
+            spawn_point = self.enemy_spawn_points[self.next_spawn_index]
+            if player.rect.centerx < spawn_point["trigger_x"]:
+                break
 
             amount = max(1, int(spawn_point.get("amount", 1)))
             for spawn_index in range(amount):
@@ -195,6 +206,7 @@ class LevelManager:
                 if enemy:
                     self.active_enemies.append(enemy)
             spawn_point["spawned"] = True
+            self.next_spawn_index += 1
 
     def spawn_enemy(self, spawn_point, images, platform_graph, spawn_index=0, spawn_count=1):
         enemy_type = spawn_point["type"]
@@ -215,9 +227,60 @@ class LevelManager:
         offset = (spawn_index - (spawn_count - 1) / 2) * spacing
         enemy.rect.midbottom = (round(spawn_point["x"] + offset), spawn_point["y"])
         enemy.sync_position()
+        enemy.section = spawn_point.get("section")
         self.apply_level_difficulty(enemy)
         self.start_enemy_spawn_animation(enemy, spawn_point)
         return enemy
+
+    def current_section_name(self, player_x):
+        for section in self.sections:
+            if section.get("start_x", 0) <= player_x <= section.get("end_x", self.level_width):
+                return section.get("name")
+        return None
+
+    def should_update_enemy(self, enemy, player, active_section):
+        if enemy.dead or enemy.removable or enemy.is_emerging():
+            return True
+
+        horizontal_distance = abs(enemy.rect.centerx - player.rect.centerx)
+        if horizontal_distance <= ENEMY_AI_ACTIVE_DISTANCE:
+            return True
+
+        if getattr(enemy, "section", None) == active_section:
+            return True
+
+        # Ground enemies still get physics while airborne so they do not freeze
+        # mid-jump just because the player moved away.
+        if hasattr(enemy, "current_platform") and not enemy.on_ground:
+            return True
+
+        return False
+
+    def pause_far_enemy(self, enemy):
+        enemy.vx = 0
+        enemy.vy = 0
+        if hasattr(enemy, "stuck_timer"):
+            enemy.stuck_timer = 0.0
+
+    def nearby_platforms_for_enemy(self, enemy, player, platforms):
+        enemy_left = enemy.rect.left - ENEMY_PLATFORM_QUERY_MARGIN
+        enemy_right = enemy.rect.right + ENEMY_PLATFORM_QUERY_MARGIN
+        player_left = player.rect.left - ENEMY_PLATFORM_QUERY_MARGIN
+        player_right = player.rect.right + ENEMY_PLATFORM_QUERY_MARGIN
+
+        nearby = [
+            platform
+            for platform in platforms
+            if (
+                platform.rect.right >= enemy_left
+                and platform.rect.left <= enemy_right
+            )
+            or (
+                platform.rect.right >= player_left
+                and platform.rect.left <= player_right
+            )
+        ]
+        return nearby or platforms
 
     def build_enemy_animations(self, enemy_type, spawn_point, images):
         type_config = ENEMY_TYPE_CONFIGS.get(enemy_type, {})
