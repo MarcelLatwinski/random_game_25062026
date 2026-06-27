@@ -1,6 +1,9 @@
 import math
+import json
+from pathlib import Path
 
 import pygame
+import settings
 from animation import AnimatedSprite, flipped_surface
 from settings import (
     SCREEN_WIDTH,
@@ -30,24 +33,238 @@ from settings import (
 from bullet import Bullet
 
 AIM_ARM_STATES = ("idle", "walk")
-DEBUG_AIM_PIVOT = False
-BODY_SHOULDER_OFFSET_RATIO = pygame.math.Vector2(0.55, 0.34)
-ARM_PIVOT_RATIO = pygame.math.Vector2(0.20, 0.50)
+AIM_BODY_FRAME_INDICES = {
+    "idle": (0,),
+    "walk": (1, 2, 3, 2),
+    "run": (4, 5, 6, 7),
+    "jump": (8, 9),
+    "fall": (10, 11),
+    "death": (12, 13, 14, 15),
+}
+AIM_BODY_FRAME_COUNT = 12
+DEFAULT_BODY_SHOULDER_RATIO = pygame.math.Vector2(0.44, 0.40)
+DEFAULT_ARM_PIVOT_RATIO = pygame.math.Vector2(0.08, 0.50)
+
+
+def _vector2_from_sequence(value, fallback):
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return pygame.math.Vector2(fallback)
+    try:
+        return pygame.math.Vector2(float(value[0]), float(value[1]))
+    except (TypeError, ValueError):
+        return pygame.math.Vector2(fallback)
+
+
+def _default_body_shoulder_offsets(frame_width, frame_height):
+    fallback = pygame.math.Vector2(
+        DEFAULT_BODY_SHOULDER_RATIO.x * frame_width,
+        DEFAULT_BODY_SHOULDER_RATIO.y * frame_height,
+    )
+    return {
+        frame_index: pygame.math.Vector2(fallback)
+        for frame_index in range(AIM_BODY_FRAME_COUNT)
+    }
+
+
+def _scaled_body_offsets(body_offsets, frame_width, frame_height):
+    scale_x = PLAYER_WIDTH / frame_width if frame_width else 1
+    scale_y = PLAYER_HEIGHT / frame_height if frame_height else 1
+    return {
+        frame_index: pygame.math.Vector2(offset.x * scale_x, offset.y * scale_y)
+        for frame_index, offset in body_offsets.items()
+    }
+
+
+def _load_aim_config():
+    """
+    Load shoulder/pivot calibration from player_aim_config.json.
+
+    The calibration tool (calibrate_aim.py) saves precise pixel coordinates
+    for the shoulder joint and arm pivot point. These coordinates are
+    critical for proper arm rotation around the shoulder without orbiting.
+
+    If the config file doesn't exist, falls back to default values.
+
+    Returns:
+        (body_shoulder_offsets, frame_size, arm_pivot, arms_size), where body
+        offsets and arm pivot are in their original unscaled asset spaces.
+    """
+    config_path = Path(__file__).parent / "assets" / "images" / "player_aim_config.json"
+
+    default_frame_width = PLAYER_WIDTH
+    default_frame_height = PLAYER_HEIGHT
+    default_arms_width = PLAYER_WIDTH
+    default_arms_height = PLAYER_HEIGHT
+    default_body_offsets = _default_body_shoulder_offsets(
+        default_frame_width,
+        default_frame_height,
+    )
+    default_arm_pivot = pygame.math.Vector2(
+        DEFAULT_ARM_PIVOT_RATIO.x * default_arms_width,
+        DEFAULT_ARM_PIVOT_RATIO.y * default_arms_height,
+    )
+
+    if not config_path.exists():
+        print(f"[AIM] Config not found at {config_path}, using defaults")
+        return (
+            default_body_offsets,
+            (default_frame_width, default_frame_height),
+            default_arm_pivot,
+            (default_arms_width, default_arms_height),
+        )
+
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+
+        frame_width = config.get("frame_width", PLAYER_WIDTH)
+        frame_height = config.get("frame_height", PLAYER_HEIGHT)
+        try:
+            frame_width = float(frame_width)
+            frame_height = float(frame_height)
+        except (TypeError, ValueError):
+            frame_width = PLAYER_WIDTH
+            frame_height = PLAYER_HEIGHT
+
+        arms_image_width = config.get("arms_width", 1254)
+        arms_image_height = config.get("arms_height", 1254)
+        try:
+            arms_image_width = float(arms_image_width)
+            arms_image_height = float(arms_image_height)
+        except (TypeError, ValueError):
+            arms_image_width = 1254
+            arms_image_height = 1254
+
+        fallback_body = pygame.math.Vector2(
+            DEFAULT_BODY_SHOULDER_RATIO.x * frame_width,
+            DEFAULT_BODY_SHOULDER_RATIO.y * frame_height,
+        )
+        single_body_shoulder = _vector2_from_sequence(
+            config.get("body_shoulder_offset"),
+            fallback_body,
+        )
+
+        body_shoulder_offsets = {}
+        config_offsets = config.get("body_shoulder_offsets")
+        for frame_index in range(AIM_BODY_FRAME_COUNT):
+            frame_key = str(frame_index)
+            if isinstance(config_offsets, dict) and frame_key in config_offsets:
+                body_shoulder_offsets[frame_index] = _vector2_from_sequence(
+                    config_offsets[frame_key],
+                    single_body_shoulder,
+                )
+            else:
+                body_shoulder_offsets[frame_index] = pygame.math.Vector2(single_body_shoulder)
+
+        fallback_arm_pivot = pygame.math.Vector2(
+            DEFAULT_ARM_PIVOT_RATIO.x * arms_image_width,
+            DEFAULT_ARM_PIVOT_RATIO.y * arms_image_height,
+        )
+        arm_pivot_pixels = _vector2_from_sequence(config.get("arm_pivot"), fallback_arm_pivot)
+
+        print(f"[AIM] Loaded calibration from {config_path}")
+        print(f"[AIM] Body shoulder offsets: {len(body_shoulder_offsets)} frames")
+        print(f"[AIM] Arm pivot: ({arm_pivot_pixels.x:.1f}, {arm_pivot_pixels.y:.1f}) in source image")
+
+        return (
+            body_shoulder_offsets,
+            (frame_width, frame_height),
+            arm_pivot_pixels,
+            (arms_image_width, arms_image_height),
+        )
+
+    except Exception as e:
+        print(f"[AIM] Error loading config: {e}, using defaults")
+        return (
+            default_body_offsets,
+            (default_frame_width, default_frame_height),
+            default_arm_pivot,
+            (default_arms_width, default_arms_height),
+        )
+
+
+# Load calibration (will use config file if it exists, otherwise defaults)
+(
+    _body_shoulder_offsets_source,
+    _body_frame_size,
+    _arm_pivot_source,
+    _arms_image_size,
+) = _load_aim_config()
+
+BODY_SHOULDER_OFFSETS = _scaled_body_offsets(
+    _body_shoulder_offsets_source,
+    _body_frame_size[0],
+    _body_frame_size[1],
+)
+BODY_SHOULDER_OFFSET = BODY_SHOULDER_OFFSETS[0]
+BODY_SHOULDER_OFFSET_RATIO = pygame.math.Vector2(
+    _body_shoulder_offsets_source[0].x / _body_frame_size[0] if _body_frame_size[0] else DEFAULT_BODY_SHOULDER_RATIO.x,
+    _body_shoulder_offsets_source[0].y / _body_frame_size[1] if _body_frame_size[1] else DEFAULT_BODY_SHOULDER_RATIO.y,
+)
+ARM_PIVOT = pygame.math.Vector2(_arm_pivot_source)
+ARM_SOURCE_SIZE = _arms_image_size
+ARM_PIVOT_RATIO = pygame.math.Vector2(
+    ARM_PIVOT.x / ARM_SOURCE_SIZE[0] if ARM_SOURCE_SIZE[0] else DEFAULT_ARM_PIVOT_RATIO.x,
+    ARM_PIVOT.y / ARM_SOURCE_SIZE[1] if ARM_SOURCE_SIZE[1] else DEFAULT_ARM_PIVOT_RATIO.y,
+)
+
+# Visible arm width as a ratio of player width. The full arms image is not
+# cropped because ARM_PIVOT is calibrated in the original image space.
+ARM_DRAW_WIDTH_RATIO = 0.49
+
+# Muzzle position as ratio along the arm (for bullet spawn point)
 MUZZLE_DISTANCE_RATIO = 0.42
-ARM_DRAW_WIDTH_RATIO = 0.70
 
 
-def rotate_surface_around_pivot(image, angle_degrees, image_pivot, screen_pivot):
-    rotation_angle = -angle_degrees
-    rotated_image = pygame.transform.rotate(image, rotation_angle)
-    pivot_to_center = pygame.math.Vector2(
-        image.get_width() / 2 - image_pivot.x,
-        image.get_height() / 2 - image_pivot.y,
-    )
-    rotated_center = pygame.math.Vector2(screen_pivot) + pivot_to_center.rotate(rotation_angle)
+def rotate_around_pivot(image, angle_degrees, image_pivot, target_pivot):
+    """
+    Rotate an image around an arbitrary local pivot and place that pivot at
+    the requested target position in screen space.
+
+    This is the CORRECT way to rotate an image with a custom pivot point.
+    Pygame's default rotation rotates around the image center, which causes
+    objects to orbit away instead of rotate smoothly in place.
+
+    Why the math works:
+    1. We rotate the image normally around its center
+    2. We calculate the offset from image center to the desired pivot point
+    3. We rotate that offset vector by the same angle (so it rotates WITH the image)
+    4. We position the rotated image such that the rotated pivot lands exactly
+       at the target screen position
+
+    Example for the player aiming system:
+    - image: the player_arms.png overlay (scaled)
+    - angle_degrees: angle from shoulder to mouse cursor
+    - image_pivot: pixel coordinates of shoulder joint INSIDE the arms image
+    - target_pivot: screen-space shoulder position on the player body
+
+    This ensures the arm pivots cleanly around the body shoulder at all angles.
+
+    Args:
+        image: pygame.Surface to rotate
+        angle_degrees: Rotation angle in degrees
+        image_pivot: Local pixel coordinates (Vector2) of pivot in unrotated image
+        target_pivot: Screen-space coordinates (Vector2) for pivot placement
+
+    Returns:
+        (rotated_image, rotated_rect) tuple for blitting to screen
+    """
+    rotated_image = pygame.transform.rotate(image, -angle_degrees)
+
+    image_rect = image.get_rect()
+    image_center = pygame.math.Vector2(image_rect.center)
+
+    # Vector from image center to the desired pivot point (in unrotated image space)
+    pivot_offset = image_pivot - image_center
+
+    # Rotate that offset by the same angle so it rotates WITH the rotated image
+    rotated_pivot_offset = pivot_offset.rotate(angle_degrees)
+
+    # Position the rotated image so the rotated pivot lands at target_pivot
     rotated_rect = rotated_image.get_rect(
-        center=(round(rotated_center.x), round(rotated_center.y)),
+        center=target_pivot - rotated_pivot_offset,
     )
+
     return rotated_image, rotated_rect
 
 
@@ -68,12 +285,21 @@ class Player:
         self.bullet_animations = bullet_animations
         self.arms_image = self.prepare_arms_image(arms_image)
         self.flipped_arms_image = flipped_surface(self.arms_image) if self.arms_image else None
-        self.body_shoulder_offset = pygame.math.Vector2(
-            PLAYER_WIDTH * BODY_SHOULDER_OFFSET_RATIO.x,
-            PLAYER_HEIGHT * BODY_SHOULDER_OFFSET_RATIO.y,
-        )
+
+        # Calibrated shoulder positions on each body frame, scaled to the
+        # runtime player draw size. Frame numbers follow the 4x4 body sheet.
+        self.body_shoulder_offsets = {
+            frame_index: pygame.math.Vector2(offset)
+            for frame_index, offset in BODY_SHOULDER_OFFSETS.items()
+        }
+        self.body_shoulder_offset = pygame.math.Vector2(self.body_shoulder_offsets[0])
+
+        # Calibrated arm pivot point. ARM_PIVOT is local to the original
+        # unrotated player_arms.png; calculate_arm_pivot scales it to the
+        # cached runtime arms surface without changing the image origin.
         self.arm_pivot = self.calculate_arm_pivot(self.arms_image)
         self.flipped_arm_pivot = self.calculate_flipped_arm_pivot(self.arms_image)
+
         self.rect = pygame.Rect(x, y, PLAYER_WIDTH, PLAYER_HEIGHT)
         self.vx = 0
         self.vy = 0
@@ -108,26 +334,30 @@ class Player:
         if arms_image is None:
             return None
 
-        bounds = arms_image.get_bounding_rect(min_alpha=1)
-        if bounds.width > 0 and bounds.height > 0 and bounds.size != arms_image.get_size():
-            cropped = pygame.Surface(bounds.size, pygame.SRCALPHA)
-            cropped.blit(arms_image, (0, 0), bounds)
-            arms_image = cropped
+        if arms_image.get_flags() & pygame.SRCALPHA == 0:
+            arms_image = arms_image.convert_alpha()
+        else:
+            arms_image = arms_image.convert_alpha()
 
-        target_width = max(1, int(round(PLAYER_WIDTH * ARM_DRAW_WIDTH_RATIO)))
-        scale = target_width / arms_image.get_width()
+        opaque_bounds = arms_image.get_bounding_rect(min_alpha=1)
+        source_visible_width = opaque_bounds.width or arms_image.get_width()
+        target_visible_width = max(1, PLAYER_WIDTH * ARM_DRAW_WIDTH_RATIO)
+        scale = target_visible_width / source_visible_width
         target_size = (
-            target_width,
+            max(1, int(round(arms_image.get_width() * scale))),
             max(1, int(round(arms_image.get_height() * scale))),
         )
-        return pygame.transform.scale(arms_image, target_size)
+        return pygame.transform.smoothscale(arms_image, target_size)
 
     def calculate_arm_pivot(self, arms_image):
         if arms_image is None:
             return pygame.math.Vector2()
+        source_width, source_height = ARM_SOURCE_SIZE
+        scale_x = arms_image.get_width() / source_width if source_width else 1
+        scale_y = arms_image.get_height() / source_height if source_height else 1
         return pygame.math.Vector2(
-            arms_image.get_width() * ARM_PIVOT_RATIO.x,
-            arms_image.get_height() * ARM_PIVOT_RATIO.y,
+            ARM_PIVOT.x * scale_x,
+            ARM_PIVOT.y * scale_y,
         )
 
     def calculate_flipped_arm_pivot(self, arms_image):
@@ -200,15 +430,43 @@ class Player:
             self.rect.top + offset.y,
         )
 
-    def shoulder_offset(self, facing_right=None):
+    def current_body_frame_index(self):
+        if not self.animator:
+            return 0
+
+        animation = self.animator.current_animation()
+        if not animation:
+            return 0
+
+        frame_sequence = AIM_BODY_FRAME_INDICES.get(self.animator.current_state)
+        if not frame_sequence:
+            return 0
+
+        animation_index = min(animation.current_index, len(frame_sequence) - 1)
+        return frame_sequence[animation_index]
+
+    def body_shoulder_offset_for_frame(self, frame_index=None):
+        if frame_index is None:
+            frame_index = self.current_body_frame_index()
+        return pygame.math.Vector2(
+            self.body_shoulder_offsets.get(
+                frame_index,
+                self.body_shoulder_offsets[0],
+            )
+        )
+
+    def shoulder_offset(self, facing_right=None, frame_index=None):
         if facing_right is None:
             facing_right = self.facing_right
+        base_offset = self.body_shoulder_offset_for_frame(frame_index)
         if facing_right:
-            return pygame.math.Vector2(self.body_shoulder_offset)
-        return pygame.math.Vector2(
-            PLAYER_WIDTH - self.body_shoulder_offset.x,
-            self.body_shoulder_offset.y,
-        )
+            offset = pygame.math.Vector2(base_offset)
+        else:
+            offset = pygame.math.Vector2(
+                PLAYER_WIDTH - base_offset.x,
+                base_offset.y,
+            )
+        return offset
 
     def reload(self, now):
         missing_ammo = self.magazine_size - self.current_ammo_in_gun
@@ -412,16 +670,48 @@ class Player:
         )
 
     def draw_aim_arms(self, surface, draw_rect, target_pos):
+        """
+        Render the player's arm/gun overlay, rotated toward the target position.
+
+        CALIBRATION SYSTEM:
+        This system uses two calibrated pivot points to ensure the arm rotates
+        cleanly around the shoulder joint without orbiting:
+
+        1. BODY_SHOULDER_OFFSET_RATIO:
+           - Defines WHERE the shoulder joint is on the player body sprite
+           - In pixels: self.body_shoulder_offset
+           - This is the screen-space position the arm pivot rotates around
+           - Calibrated using calibrate_aim.py (red dot on body frame)
+
+        2. ARM_PIVOT_RATIO:
+           - Defines WHERE the shoulder joint is INSIDE the arms image
+           - In pixels: self.arm_pivot
+           - This is the local coordinate in the unrotated arms image
+           - Calibrated using calibrate_aim.py (blue dot on arms image)
+
+        WHY TWO PIVOTS?
+        The body and arms are separate sprites. The body has one shoulder position,
+        and the arms have a different coordinate system. To make them align:
+        - Calculate screen-space shoulder from player position + body offset
+        - Rotate arms around its internal pivot point
+        - Position rotated arms so its pivot lands on the body's shoulder
+
+        If these calibrations are wrong:
+        - Arm orbits away from shoulder → recalibrate with calibrate_aim.py
+        - Shoulder appears misaligned → adjust constants and re-calibrate
+        """
         arms_image = self.arms_image if self.facing_right else self.flipped_arms_image
         if arms_image is None:
             return
 
+        # Get shoulder position in screen space
         shoulder = self.aim_shoulder_screen(draw_rect)
         target = pygame.math.Vector2(target_pos)
         aim_vector = target - shoulder
         if aim_vector.length_squared() <= 0:
             return
 
+        # Calculate angle from shoulder to target
         angle_degrees = math.degrees(math.atan2(aim_vector.y, aim_vector.x))
         if self.facing_right:
             pivot = self.arm_pivot
@@ -430,18 +720,14 @@ class Player:
             pivot = self.flipped_arm_pivot
             draw_angle = angle_degrees - 180
 
-        rotated_image, rotated_rect = rotate_surface_around_pivot(
+        # Rotate arm image around its local pivot and place pivot at shoulder
+        rotated_image, rotated_rect = rotate_around_pivot(
             arms_image,
             draw_angle,
             pivot,
             shoulder,
         )
         surface.blit(rotated_image, rotated_rect)
-
-        if DEBUG_AIM_PIVOT:
-            pivot_point = (round(shoulder.x), round(shoulder.y))
-            pygame.draw.circle(surface, (255, 40, 40), pivot_point, 4)
-            pygame.draw.circle(surface, (40, 120, 255), pivot_point, 2)
 
     def draw(self, surface, camera_x=0):
         draw_rect = self.rect.move(-camera_x, 0)
@@ -464,6 +750,35 @@ class Player:
         if draw_arms:
             self.draw_aim_arms(surface, draw_rect, mouse_pos)
         self.draw_reload_prompt(surface, draw_rect)
+
+        if settings.DEBUG_AIM_PIVOT:
+            shoulder = self.aim_shoulder_screen(draw_rect)
+            shoulder_point = (round(shoulder.x), round(shoulder.y))
+            frame_index = self.current_body_frame_index()
+            offset = self.shoulder_offset(frame_index=frame_index)
+            draw_offset = self.animator.current_draw_offset() if self.animator else (0, 0)
+            facing = "RIGHT" if self.facing_right else "LEFT"
+
+            # Get frame info
+            current_frame = None
+            frame_size = None
+            if self.animator and hasattr(self.animator, 'current_frame'):
+                current_frame = self.animator.current_frame()
+                if current_frame:
+                    frame_size = current_frame.get_size()
+
+            print(f"DEBUG: facing={facing}, frame={frame_index}, draw_rect={draw_rect}, frame_size={frame_size}, shoulder_calc={offset}, shoulder_screen={shoulder_point}")
+
+            # Draw shoulder circles
+            pygame.draw.circle(surface, (255, 40, 40), shoulder_point, 6)
+            pygame.draw.circle(surface, (40, 120, 255), shoulder_point, 4)
+
+            # Also draw arm pivot position if arms are being drawn
+            if self.should_draw_aim_arms() and self.arms_image:
+                arm_image = self.arms_image if self.facing_right else self.flipped_arms_image
+                if arm_image:
+                    arm_pivot = self.arm_pivot if self.facing_right else self.flipped_arm_pivot
+                    print(f"  ARM_INFO: arm_image_size={arm_image.get_size()}, arm_pivot={arm_pivot}, should_be_at_shoulder={shoulder_point}")
 
     def draw_reload_prompt(self, surface, draw_rect):
         if self.reload_prompt_age is None:

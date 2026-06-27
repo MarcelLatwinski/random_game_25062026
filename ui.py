@@ -1,4 +1,5 @@
 import pygame
+import settings
 from settings import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
@@ -124,17 +125,19 @@ class UI:
 
     def draw_pause(self, surface, show_fps_counter=False):
         panel_width = 620
-        panel_height = 240
+        panel_height = 290
         panel_x = (SCREEN_WIDTH - panel_width) // 2
-        panel_y = 245
+        panel_y = 225
         panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
         pygame.draw.rect(surface, COLOR_UI_BG, panel_rect)
         pygame.draw.rect(surface, COLOR_TEXT, panel_rect, 4)
 
         fps_status = "ON" if show_fps_counter else "OFF"
+        debug_status = "ON" if settings.DEBUG_AIM_PIVOT else "OFF"
         self.draw_text(surface, "Paused", panel_x + 32, panel_y + 28, size=48, bold=True)
         self.draw_text(surface, "Esc: Resume", panel_x + 36, panel_y + 104, size=32, bold=True)
         self.draw_text(surface, f"F: FPS Counter {fps_status}", panel_x + 36, panel_y + 154, size=32, bold=True)
+        self.draw_text(surface, f"D: Debug Pivot {debug_status}", panel_x + 36, panel_y + 204, size=32, bold=True)
 
     def draw_game_over(self, surface):
         self.draw_text(surface, "Game Over", 540, 260, size=48)

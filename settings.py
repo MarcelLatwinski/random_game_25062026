@@ -5,6 +5,7 @@ SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 FPS = 60
 SHOW_FPS_COUNTER = True
+DEBUG_AIM_PIVOT = True
 MAX_FRAME_DT = 1 / 20
 
 PLAYER_MAX_HEALTH = 100
@@ -28,15 +29,25 @@ MAX_RESERVE_AMMO = 60
 RELOAD_DURATION = 0.5
 RELOAD_PROMPT_DURATION = 1.0
 RELOAD_PROMPT_RISE = 42
-CHARACTER_ASSET_SCALE = 1.5
+CHARACTER_ASSET_SCALE = 1.725
+PLAYER_ASSET_SCALE = 1.92
+TANK_ASSET_SCALE = 1.875
 
 
 def scaled_character_size(size):
     return int(round(size * CHARACTER_ASSET_SCALE))
 
 
-PLAYER_WIDTH = scaled_character_size(76)
-PLAYER_HEIGHT = scaled_character_size(76)
+def scaled_player_size(size):
+    return int(round(size * PLAYER_ASSET_SCALE))
+
+
+def scaled_tank_size(size):
+    return int(round(size * TANK_ASSET_SCALE))
+
+
+PLAYER_WIDTH = scaled_player_size(76)
+PLAYER_HEIGHT = scaled_player_size(76)
 
 WALKER_HP = 40
 WALKER_SPEED = 4.8
@@ -51,16 +62,16 @@ TANK_SPEED = 2.6
 TANK_DAMAGE = 25
 TANK_JUMP_INTERVAL = (2.0, 3.0)
 TANK_JUMP_STRENGTH = 30
-TANK_WIDTH = scaled_character_size(92)
-TANK_HEIGHT = scaled_character_size(92)
+TANK_WIDTH = scaled_tank_size(92)
+TANK_HEIGHT = scaled_tank_size(92)
 
 FLYING_HP = 30
 FLYING_SPEED = 6.4
 FLYING_DAMAGE = 8
-FLYING_WIDTH = 84
-FLYING_HEIGHT = 108
-FLYING_SPRITE_WIDTH = 168
-FLYING_SPRITE_HEIGHT = 168
+FLYING_WIDTH = scaled_character_size(56)
+FLYING_HEIGHT = scaled_character_size(72)
+FLYING_SPRITE_WIDTH = scaled_character_size(112)
+FLYING_SPRITE_HEIGHT = scaled_character_size(112)
 FLYING_SPRITE_DRAW_OFFSET = (
     (FLYING_WIDTH - FLYING_SPRITE_WIDTH) // 2,
     (FLYING_HEIGHT - FLYING_SPRITE_HEIGHT) // 2,
@@ -640,7 +651,7 @@ SPRITE_SHEETS = {
         "remove_light_background": needs_runtime_background_cleanup(PLAYER_BODY_SHEET_PATH),
         "background_min_value": 185,
         "background_channel_spread": 52,
-        "trim_transparent": True,
+        "trim_transparent": False,
         "align": "bottom",
         "animations": {
             "idle": {"row": 0, "frames": [0], "fps": 2, "loop": True},

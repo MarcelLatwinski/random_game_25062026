@@ -1,0 +1,65 @@
+{
+  "arm_pivot": [
+    289.0,
+    525.0
+  ],
+  "body_shoulder_offsets": {
+    "0": [
+      160.0,
+      141.5
+    ],
+    "1": [
+      125.0,
+      141.5
+    ],
+    "2": [
+      96.0,
+      141.5
+    ],
+    "3": [
+      77.0,
+      141.5
+    ],
+    "4": [
+      148.0,
+      137.5
+    ],
+    "5": [
+      99.0,
+      142.5
+    ],
+    "6": [
+      85.0,
+      140.5
+    ],
+    "7": [
+      50.0,
+      142.5
+    ],
+    "8": [
+      141.0,
+      112.5
+    ],
+    "9": [
+      116.0,
+      103.5
+    ],
+    "10": [
+      94.0,
+      124.5
+    ],
+    "11": [
+      66.0,
+      139.5
+    ]
+  },
+  "body_shoulder_offset": [
+    160.0,
+    141.5
+  ],
+  "frame_width": 313,
+  "frame_height": 313,
+  "arms_width": 1254,
+  "arms_height": 1254,
+  "notes": "Pixel coordinates: body offsets are per-frame in body sheet frame space; arm_pivot is local to the unrotated full player_arms image."
+}

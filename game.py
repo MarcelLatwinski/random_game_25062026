@@ -177,7 +177,7 @@ class Game:
                 path,
                 remove_light_pixels=needs_cleanup,
                 remove_light_pixels_from_edges=needs_cleanup,
-                trim_transparent=True,
+                trim_transparent=False,
                 transparent_min_value=185,
                 transparent_channel_spread=52,
             )
@@ -519,6 +519,9 @@ class Game:
                         self.state = "PLAYING"
                 if event.key == pygame.K_f and self.state == "PAUSED":
                     self.show_fps_counter = not self.show_fps_counter
+                if event.key == pygame.K_d and self.state == "PAUSED":
+                    import settings
+                    settings.DEBUG_AIM_PIVOT = not settings.DEBUG_AIM_PIVOT
                 if event.key == pygame.K_r:
                     if self.state == "PLAYING":
                         self.player.reload(now)
