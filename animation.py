@@ -162,11 +162,18 @@ def load_sheet_frames(sheet_config):
         path,
         sheet_config.get("columns"),
         sheet_config.get("rows"),
+        sheet_config.get("frame_width"),
+        sheet_config.get("frame_height"),
+        sheet_config.get("target_size"),
         sheet_config.get("margin", 0),
         sheet_config.get("spacing", 0),
         sheet_config.get("scale", 1),
+        sheet_config.get("background_min_value"),
+        sheet_config.get("background_channel_spread"),
         sheet_config.get("remove_light_background", False),
         sheet_config.get("trim_transparent", False),
+        sheet_config.get("align"),
+        sheet_config.get("use_floor_grid", False),
         repr(sheet_config.get("frame_rects")),
     )
     if cache_key in _SHEET_FRAME_CACHE:
@@ -191,6 +198,7 @@ def get_animation_source_config(sheet_config, animation_config):
         "trim_transparent",
         "align",
         "draw_offset",
+        "use_floor_grid",
     )
     source_config = {
         key: sheet_config[key]
@@ -292,6 +300,24 @@ def build_frame_rects(sheet, sheet_config):
                     margin + row * (explicit_height + spacing),
                     explicit_width,
                     explicit_height,
+                )
+                for column in range(columns)
+            ]
+            for row in range(rows)
+        ]
+
+    if sheet_config.get("use_floor_grid", False):
+        available_width = sheet.get_width() - margin * 2 - spacing * (columns - 1)
+        available_height = sheet.get_height() - margin * 2 - spacing * (rows - 1)
+        frame_width = available_width // columns
+        frame_height = available_height // rows
+        return [
+            [
+                pygame.Rect(
+                    margin + column * (frame_width + spacing),
+                    margin + row * (frame_height + spacing),
+                    frame_width,
+                    frame_height,
                 )
                 for column in range(columns)
             ]

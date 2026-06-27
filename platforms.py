@@ -11,6 +11,8 @@ MAX_REPEATING_PLATFORM_TILE_WIDTH = 640
 
 
 class Platform:
+    _scaled_surface_cache = {}
+
     def __init__(self, platform_data, platform_id):
         if isinstance(platform_data, dict):
             rect = (
@@ -52,10 +54,32 @@ class Platform:
     def visual_draw_height(self):
         return self.visual_height or max(self.rect.height, self.rect.height * 3)
 
-    def scaled_image_size(self, visual_height):
-        if self.rect.width > SCREEN_WIDTH * 2:
-            return (min(MAX_REPEATING_PLATFORM_TILE_WIDTH, self.rect.width), visual_height)
-        return (self.rect.width, visual_height)
+    def uses_repeated_tiles(self):
+        return self.rect.width > SCREEN_WIDTH * 2
+
+    def scaled_image_size(self, image, max_visual_height):
+        source_width = image.get_width()
+        source_height = image.get_height()
+        if source_width <= 0 or source_height <= 0:
+            return (self.rect.width, max_visual_height)
+
+        target_width = self.rect.width
+        if self.uses_repeated_tiles():
+            target_width = min(MAX_REPEATING_PLATFORM_TILE_WIDTH, self.rect.width)
+
+        scale = target_width / source_width
+        if max_visual_height:
+            scale = min(scale, max_visual_height / source_height)
+
+        return (
+            max(1, int(round(source_width * scale))),
+            max(1, int(round(source_height * scale))),
+        )
+
+    def image_draw_rect(self, draw_rect, scaled):
+        if self.uses_repeated_tiles():
+            return pygame.Rect(draw_rect.left, draw_rect.top, self.rect.width, scaled.get_height())
+        return pygame.Rect(draw_rect.left, draw_rect.top, scaled.get_width(), scaled.get_height())
 
     def prepare_surface(self, image=None, images=None):
         platform_image = self.resolve_image(image=image, images=images)
@@ -63,8 +87,8 @@ class Platform:
             return
 
         # Build the scaled sprite during loading so gameplay draw calls only blit.
-        visual_height = self.visual_draw_height()
-        self.scaled_platform_image(platform_image, self.scaled_image_size(visual_height))
+        image_size = self.scaled_image_size(platform_image, self.visual_draw_height())
+        self.scaled_platform_image(platform_image, image_size)
 
     def draw(self, surface, image=None, images=None, camera_x=0):
         if not self.is_near_camera(camera_x, surface.get_width()):
@@ -74,11 +98,10 @@ class Platform:
         platform_image = self.resolve_image(image=image, images=images)
 
         if platform_image:
-            visual_height = self.visual_draw_height()
-            image_size = self.scaled_image_size(visual_height)
+            image_size = self.scaled_image_size(platform_image, self.visual_draw_height())
             scaled = self.scaled_platform_image(platform_image, image_size)
-            image_rect = pygame.Rect(draw_rect.left, draw_rect.top, self.rect.width, visual_height)
-            if self.rect.width > scaled.get_width():
+            image_rect = self.image_draw_rect(draw_rect, scaled)
+            if self.uses_repeated_tiles():
                 self.blit_repeated(surface, scaled, image_rect)
             else:
                 self.blit_clipped(surface, scaled, image_rect)
@@ -151,7 +174,13 @@ class Platform:
         if self._scaled_source_id == source_id and self._scaled_size == image_size:
             return self._scaled_image
 
-        self._scaled_image = pygame.transform.scale(image, image_size)
+        cache_key = (source_id, image_size)
+        scaled_image = self._scaled_surface_cache.get(cache_key)
+        if scaled_image is None:
+            scaled_image = pygame.transform.scale(image, image_size)
+            self._scaled_surface_cache[cache_key] = scaled_image
+
+        self._scaled_image = scaled_image
         self._scaled_source_id = source_id
         self._scaled_size = image_size
         return self._scaled_image

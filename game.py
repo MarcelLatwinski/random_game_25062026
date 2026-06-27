@@ -1,6 +1,6 @@
 import pygame
-import os
 import random
+from asset_manager import AssetManager
 from settings import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
@@ -18,10 +18,11 @@ from settings import (
     BULLET_COLLISION_QUERY_MARGIN,
     IMAGE_PATHS,
     ENVIRONMENT_IMAGE_PATHS,
-    PLATFORM_ASSET_KEYS,
+    PLATFORM_KEYS,
     FLOOR_ASSET_KEY,
     FLOOR_SURFACE_OFFSET_Y,
     BACKGROUND_CUTOUT_KEYS,
+    is_preprocessed_image_path,
     SPRITE_SHEETS,
     ENEMY_TYPE_CONFIGS,
     PICKUP_SPRITES,
@@ -30,7 +31,7 @@ from settings import (
     AMMO_DROP_CHANCE,
     HEALTH_DROP_CHANCE,
 )
-from animation import load_animation_set, flipped_surface
+from animation import flipped_surface
 from player import Player
 from level_manager import LevelManager
 from upgrade_manager import UpgradeManager
@@ -60,13 +61,16 @@ class Game:
         pygame.display.set_caption("Zombie Platform Shooter")
         self.clock = pygame.time.Clock()
         self.state = "MAIN_MENU"
-        self.images = {}
+        self.assets = AssetManager()
+        self.images = self.assets.images
         self.scaled_background = None
         self.parallax_cache = {}
         self.loading_screen_drawn = False
         self.loading_tasks = []
         self.loading_task_index = 0
+        self.loading_task_total = 0
         self.loading_status = "Preparing level"
+        self.loading_context = "new_game"
         self.level_manager = LevelManager()
         self.preloaded_sections = set()
         self.platforms = []
@@ -107,6 +111,7 @@ class Game:
             x,
             y,
             animations=self.images.get("player"),
+            arms_image=self.images.get("player_arms"),
             bullet_animations=self.images.get("bullet"),
         )
 
@@ -118,14 +123,7 @@ class Game:
         self.update_camera()
 
     def load_images(self):
-        for key, path in IMAGE_PATHS.items():
-            self.load_image(key, path)
-        for key in ENVIRONMENT_IMAGE_PATHS:
-            self.load_environment_image(key)
-        self.load_pickup_sprites()
-
-        for key in SPRITE_SHEETS:
-            self.load_animation(key)
+        self.load_current_level_assets()
         return self.images
 
     def load_image(
@@ -133,42 +131,28 @@ class Game:
         key,
         path,
         remove_light_pixels=False,
+        remove_light_pixels_from_edges=False,
         trim_transparent=False,
         transparent_min_value=225,
         transparent_channel_spread=36,
     ):
-        if key in self.images:
-            return self.images[key]
-
-        image = None
-        if path and os.path.exists(path):
-            try:
-                image = pygame.image.load(path).convert_alpha()
-                if remove_light_pixels:
-                    self.remove_near_white_pixels(
-                        image,
-                        min_value=transparent_min_value,
-                        max_channel_spread=transparent_channel_spread,
-                    )
-                if trim_transparent:
-                    image = self.trim_transparent_image(image)
-            except pygame.error:
-                image = None
-
-        self.images[key] = image
+        image = self.assets.load_image(
+            key,
+            path,
+            remove_light_pixels=remove_light_pixels,
+            remove_light_pixels_from_edges=remove_light_pixels_from_edges,
+            trim_transparent=trim_transparent,
+            transparent_min_value=transparent_min_value,
+            transparent_channel_spread=transparent_channel_spread,
+        )
         if key == "background" and image:
             self.scaled_background = pygame.transform.scale(image, (SCREEN_WIDTH, SCREEN_HEIGHT))
         return image
 
     def load_environment_image(self, key):
         path = ENVIRONMENT_IMAGE_PATHS.get(key)
-        # Background 1 is a full skyline image, so it stays opaque. The middle
-        # and closest layers are cutout art, so near-white checkerboard pixels
-        # are cleaned into transparency. True PNG alpha is preserved by
-        # convert_alpha() for any future replacement art. The floor uses the
-        # same cleanup, but it is not trimmed because its top transparent space
-        # is what lets FLOOR_SURFACE_OFFSET_Y align the walkable concrete.
-        is_platform_sprite = key.startswith("platform_")
+        is_preprocessed = is_preprocessed_image_path(path)
+        is_platform_sprite = key in PLATFORM_KEYS
         is_floor_sprite = key == FLOOR_ASSET_KEY
         is_cutout_background = key in BACKGROUND_CUTOUT_KEYS
         min_value = 205 if is_cutout_background or is_floor_sprite else 225
@@ -176,56 +160,36 @@ class Game:
         return self.load_image(
             key,
             path,
-            remove_light_pixels=is_platform_sprite or is_cutout_background or is_floor_sprite,
+            remove_light_pixels=(
+                not is_preprocessed
+                and (is_platform_sprite or is_cutout_background or is_floor_sprite)
+            ),
             trim_transparent=is_platform_sprite,
             transparent_min_value=min_value,
             transparent_channel_spread=channel_spread,
         )
 
-    def remove_near_white_pixels(self, image, min_value=225, max_channel_spread=36):
-        # Some cutout sprites are RGB images with a fake transparency
-        # checkerboard baked in. Low-saturation bright pixels become transparent
-        # so the skyline can show through openings in background_2/background_3.
-        width = image.get_width()
-        height = image.get_height()
-
-        image.lock()
-        for x in range(width):
-            for y in range(height):
-                color = image.get_at((x, y))
-                brightest = max(color.r, color.g, color.b)
-                darkest = min(color.r, color.g, color.b)
-                if darkest >= min_value and brightest - darkest <= max_channel_spread:
-                    image.set_at((x, y), (color.r, color.g, color.b, 0))
-        image.unlock()
-
-    def trim_transparent_image(self, image):
-        bounds = image.get_bounding_rect(min_alpha=1)
-        if bounds.width == 0 or bounds.height == 0:
-            return image
-
-        trimmed = pygame.Surface(bounds.size, pygame.SRCALPHA)
-        trimmed.blit(image, (0, 0), bounds)
-        return trimmed
+    def load_core_image(self, key, path):
+        if key == "player_arms":
+            needs_cleanup = not is_preprocessed_image_path(path)
+            return self.load_image(
+                key,
+                path,
+                remove_light_pixels=needs_cleanup,
+                remove_light_pixels_from_edges=needs_cleanup,
+                trim_transparent=True,
+                transparent_min_value=185,
+                transparent_channel_spread=52,
+            )
+        return self.load_image(key, path)
 
     def load_animation(self, key):
-        if key in self.images:
-            return self.images[key]
-
         sheet_config = SPRITE_SHEETS.get(key)
-        if not sheet_config:
-            self.images[key] = None
-            return None
-
-        try:
-            self.images[key] = load_animation_set(sheet_config)
-        except pygame.error:
-            self.images[key] = None
-        return self.images[key]
+        return self.assets.load_animation(key, sheet_config)
 
     def load_core_gameplay_assets(self):
         for key, path in IMAGE_PATHS.items():
-            self.load_image(key, path)
+            self.load_core_image(key, path)
         self.load_pickup_sprites()
         for key in ("player", "bullet"):
             self.load_animation(key)
@@ -297,12 +261,6 @@ class Game:
     def current_level_enemy_asset_keys(self, section_names=None, section_limit=None):
         keys = set()
 
-        for config in ENEMY_TYPE_CONFIGS.values():
-            for key_name in ("animation_key", "spawn_sheet"):
-                key = config.get(key_name)
-                if key:
-                    keys.add(key)
-
         relevant_spawn_points = self.level_manager.enemy_spawn_points
         if section_names is not None:
             relevant_spawn_points = [
@@ -313,8 +271,9 @@ class Game:
             relevant_spawn_points = self.level_manager.enemy_spawn_points[:section_limit]
 
         for spawn_point in relevant_spawn_points:
+            type_config = ENEMY_TYPE_CONFIGS.get(spawn_point.get("type"), {})
             for key_name in ("animation_key", "spawn_sheet"):
-                key = spawn_point.get(key_name)
+                key = spawn_point.get(key_name, type_config.get(key_name))
                 if key:
                     keys.add(key)
 
@@ -332,57 +291,50 @@ class Game:
     def add_loading_task(self, tasks, label, function, *args):
         tasks.append((label, lambda function=function, args=args: function(*args)))
 
+    def current_level_section_names(self):
+        return [
+            section.get("name")
+            for section in self.level_manager.sections
+            if section.get("name")
+        ]
+
     def prepare_start_loading_tasks(self):
         self.level_manager.start_level()
         self.load_level_layout()
+        section_names = self.current_level_section_names()
 
         # Each task runs on a separate loading update. That lets the loading
         # screen repaint instead of freezing during one large asset load.
         tasks = []
         for key, path in IMAGE_PATHS.items():
-            self.add_loading_task(tasks, f"Loading {key}", self.load_image, key, path)
+            self.add_loading_task(tasks, f"Loading {key}", self.load_core_image, key, path)
 
         self.add_loading_task(tasks, "Preparing pickups", self.load_pickup_sprites)
 
-        queued_visual_keys = set()
-        if DRAW_FLOOR_VISUAL:
-            self.add_loading_task(
-                tasks,
-                f"Loading {FLOOR_ASSET_KEY}",
-                self.load_environment_image,
-                FLOOR_ASSET_KEY,
-            )
-            queued_visual_keys.add(FLOOR_ASSET_KEY)
-
-        if DRAW_PLATFORM_VISUALS:
-            for key in PLATFORM_ASSET_KEYS:
-                self.add_loading_task(tasks, f"Loading {key}", self.load_environment_image, key)
-                queued_visual_keys.add(key)
-
-        initial_section_names = [
-            section.get("name") for section in self.level_manager.sections[:1]
-            if section.get("name")
-        ]
-        for key in self.current_level_visual_asset_keys(section_names=initial_section_names):
-            if key in ENVIRONMENT_IMAGE_PATHS and key not in queued_visual_keys:
+        for key in self.current_level_visual_asset_keys(section_names=section_names):
+            if key in ENVIRONMENT_IMAGE_PATHS:
                 self.add_loading_task(tasks, f"Loading {key}", self.load_environment_image, key)
 
         animation_keys = ["player", "bullet"]
-        for key in self.current_level_enemy_asset_keys(section_names=initial_section_names):
+        for key in self.current_level_enemy_asset_keys(section_names=section_names):
             if key not in animation_keys:
                 animation_keys.append(key)
         for key in animation_keys:
             self.add_loading_task(tasks, f"Loading {key}", self.load_animation, key)
 
+        self.add_loading_task(tasks, "Preparing backgrounds", self.prepare_parallax_cache)
+        self.add_loading_task(tasks, "Preparing platform sprites", self.prepare_platform_surfaces)
+        self.add_loading_task(tasks, "Preparing flipped frames", self.prepare_flipped_animation_frames)
+
         self.loading_tasks = tasks
         self.loading_task_index = 0
+        self.loading_task_total = len(tasks)
 
-    def prepare_runtime_caches(self):
+    def prepare_runtime_caches(self, section_names=None):
         self.prepare_parallax_cache()
+        self.prepare_platform_surfaces(section_names=section_names)
 
     def prepare_flipped_animation_frames(self):
-        # Characters often face left. Pre-caching flipped frames avoids creating
-        # new images during draw calls later.
         for image_group in self.images.values():
             if not isinstance(image_group, dict):
                 continue
@@ -397,17 +349,17 @@ class Game:
             if image:
                 self.scaled_parallax_layer(image_key, image)
 
-    def prepare_platform_surfaces(self):
+    def prepare_platform_surfaces(self, section_names=None):
         if not DRAW_PLATFORM_VISUALS:
             return
 
+        section_filter = set(section_names) if section_names is not None else None
         for platform in self.platforms:
+            if section_filter is not None and platform.section not in section_filter:
+                continue
             if not self.should_draw_platform_visual(platform):
                 continue
-            platform.prepare_surface(
-                image=self.images.get("platform"),
-                images=self.images,
-            )
+            platform.prepare_surface(images=self.images)
 
     def should_draw_platform_visual(self, platform):
         if not DRAW_PLATFORM_VISUALS:
@@ -421,31 +373,67 @@ class Game:
         return platform.rect.width < self.level_manager.level_width * 0.9
 
     def request_start_game(self):
+        self.level_manager.reset()
+        self.load_level_layout()
+        self.loading_context = "new_game"
         self.state = "LOADING"
         self.loading_screen_drawn = False
         self.loading_tasks = []
         self.loading_task_index = 0
+        self.loading_task_total = 0
         self.loading_status = "Preparing level"
 
+    def request_next_level_loading(self):
+        self.loading_context = "next_level"
+        self.state = "LOADING"
+        self.loading_screen_drawn = False
+        self.loading_tasks = []
+        self.loading_task_index = 0
+        self.loading_task_total = 0
+        self.loading_status = "Preparing next level"
+
     def start_game(self):
-        self.level_manager.start_level()
-        self.load_level_layout()
+        self.level_manager.reset()
+        self.loading_context = "new_game"
         self.prepare_start_loading_tasks()
-        self.finish_start_game()
+        for _, task in self.loading_tasks:
+            task()
+        self.loading_task_index = self.loading_task_total
+        self.finish_loading()
 
     def finish_start_game(self):
+        self.preloaded_sections = set()
         self.player = self.create_player()
         self.bullets = []
         self.pickups = []
         self.spawn_level_pickups()
         self.update_camera()
-        initial_section = self.level_manager.current_section_name(self.player.rect.centerx)
-        if initial_section:
-            self.preloaded_sections.add(initial_section)
+        self.mark_sections_preloaded(self.current_level_section_names())
         self.state = "PLAYING"
+        self.clear_loading_state()
+
+    def finish_next_level(self):
+        self.preloaded_sections = set()
+        self.reset_player_for_level()
+        self.bullets = []
+        self.pickups = []
+        self.spawn_level_pickups()
+        self.mark_sections_preloaded(self.current_level_section_names())
+        self.state = "PLAYING"
+        self.clear_loading_state()
+
+    def finish_loading(self):
+        if self.loading_context == "next_level":
+            self.finish_next_level()
+            return
+        self.finish_start_game()
+
+    def clear_loading_state(self):
         self.loading_screen_drawn = False
         self.loading_tasks = []
         self.loading_task_index = 0
+        self.loading_task_total = 0
+        self.loading_status = "Preparing level"
 
     def update_loading(self):
         if not self.loading_screen_drawn:
@@ -453,21 +441,26 @@ class Game:
 
         if not self.loading_tasks:
             self.prepare_start_loading_tasks()
+            self.loading_status = "Loading 0 / {}".format(self.loading_task_total)
             return
 
         if self.loading_task_index < len(self.loading_tasks):
             label, task = self.loading_tasks[self.loading_task_index]
-            self.loading_status = label
+            self.loading_status = "{} ({} / {})".format(
+                label,
+                self.loading_task_index + 1,
+                self.loading_task_total,
+            )
             task()
             self.loading_task_index += 1
             return
 
-        self.finish_start_game()
+        self.finish_loading()
 
     def loading_progress(self):
-        if not self.loading_tasks:
+        if not self.loading_task_total:
             return 0.0
-        return self.loading_task_index / len(self.loading_tasks)
+        return self.loading_task_index / self.loading_task_total
 
     def reset(self):
         self.level_manager.reset()
@@ -475,11 +468,13 @@ class Game:
         self.player = self.create_player()
         self.bullets = []
         self.pickups = []
+        self.preloaded_sections = set()
         self.update_camera()
         self.state = "MAIN_MENU"
         self.loading_screen_drawn = False
         self.loading_tasks = []
         self.loading_task_index = 0
+        self.loading_task_total = 0
         self.loading_status = "Preparing level"
 
     def run(self):
@@ -506,6 +501,9 @@ class Game:
                 if self.state == "MAIN_MENU":
                     self.request_start_game()
                 elif self.state == "PLAYING":
+                    keys = pygame.key.get_pressed()
+                    if self.player.run_input_active(keys):
+                        continue
                     bullet = self.player.shoot(self.screen_to_world(self.last_mouse), now)
                     if bullet:
                         self.bullets.append(bullet)
@@ -549,14 +547,7 @@ class Game:
             self.player.picked_upgrades.append(picked["name"])
         self.upgrade_manager.apply_upgrade(self.player, choice_index)
         if self.level_manager.next_level():
-            self.load_level_layout()
-            self.load_current_level_assets()
-            self.prepare_runtime_caches()
-            self.reset_player_for_level()
-            self.bullets = []
-            self.pickups = []
-            self.spawn_level_pickups()
-            self.state = "PLAYING"
+            self.request_next_level_loading()
         else:
             self.state = "VICTORY"
 
@@ -594,12 +585,14 @@ class Game:
         if self.state == "LOADING":
             self.update_loading()
             return
+        if self.state == "GAME_OVER":
+            self.player.update_death_animation(dt)
+            return
 
         if self.state == "PLAYING":
             keys = pygame.key.get_pressed()
             player_platforms = self.platforms_near_rect(self.player.rect)
             self.player.update(keys, player_platforms, now, dt, self.level_manager.level_width)
-            self.ensure_section_assets_loaded()
             self.update_camera()
             removed_enemies = self.level_manager.update(
                 dt,
@@ -613,6 +606,7 @@ class Game:
             self.check_collisions(now)
             self.update_pickups()
             if self.player.health <= 0:
+                self.player.die()
                 self.state = "GAME_OVER"
             elif self.level_manager.level_complete(self.player):
                 if self.level_manager.is_final_level():
@@ -621,25 +615,10 @@ class Game:
                     self.upgrade_manager.pick_upgrades()
                     self.state = "UPGRADE_SELECT"
 
-    def ensure_section_assets_loaded(self):
-        if self.state != "PLAYING":
-            return
-
-        section_name = self.level_manager.current_section_name(self.player.rect.centerx)
-        if not section_name or section_name in self.preloaded_sections:
-            return
-
-        self.preloaded_sections.add(section_name)
-        for key in self.current_level_visual_asset_keys(section_names=[section_name]):
-            if key in ENVIRONMENT_IMAGE_PATHS:
-                self.load_environment_image(key)
-
-        animation_keys = ["player", "bullet"]
-        for key in self.current_level_enemy_asset_keys(section_names=[section_name]):
-            if key not in animation_keys:
-                animation_keys.append(key)
-        for key in animation_keys:
-            self.load_animation(key)
+    def mark_sections_preloaded(self, section_names):
+        for section_name in section_names:
+            if section_name:
+                self.preloaded_sections.add(section_name)
 
     def update_bullets(self, dt):
         for index in range(len(self.bullets) - 1, -1, -1):
@@ -1036,7 +1015,6 @@ class Game:
                     continue
                 platform.draw(
                     self.screen,
-                    image=self.images.get("platform"),
                     images=self.images,
                     camera_x=self.camera_x,
                 )

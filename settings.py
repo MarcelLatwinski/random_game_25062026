@@ -1,3 +1,4 @@
+import random
 from pathlib import Path
 
 SCREEN_WIDTH = 1920
@@ -9,6 +10,7 @@ MAX_FRAME_DT = 1 / 20
 PLAYER_MAX_HEALTH = 100
 PLAYER_START_HEALTH = 100
 PLAYER_SPEED = 8
+PLAYER_RUN_SPEED_MULTIPLIER = 1.5
 PLAYER_JUMP_STRENGTH = 30
 GRAVITY = 1.2
 MAX_FALL_SPEED = 30
@@ -55,8 +57,14 @@ TANK_HEIGHT = scaled_character_size(92)
 FLYING_HP = 30
 FLYING_SPEED = 6.4
 FLYING_DAMAGE = 8
-FLYING_WIDTH = scaled_character_size(76)
-FLYING_HEIGHT = scaled_character_size(76)
+FLYING_WIDTH = 84
+FLYING_HEIGHT = 108
+FLYING_SPRITE_WIDTH = 168
+FLYING_SPRITE_HEIGHT = 168
+FLYING_SPRITE_DRAW_OFFSET = (
+    (FLYING_WIDTH - FLYING_SPRITE_WIDTH) // 2,
+    (FLYING_HEIGHT - FLYING_SPRITE_HEIGHT) // 2,
+)
 
 GROUND_Y = 990
 GROUND_COLLISION_HEIGHT = SCREEN_HEIGHT - GROUND_Y
@@ -74,23 +82,25 @@ EXIT_HEIGHT = 170
 # actual file extension so level data can refer to "background_1" or
 # "platform_3" instead of hard-coding ".png" everywhere.
 ENVIRONMENT_ASSET_DIRS = (
+    "assets/images/processed",
     "assets/images/background_platforms",
     "assets/images",
 )
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+PROCESSED_ASSET_DIR = Path("assets/images/processed")
 BACKGROUND_ASSET_KEYS = (
     "background_1",
     "background_2",
     "background_3",
 )
-PLATFORM_ASSET_KEYS = (
+PLATFORM_KEYS = (
     "platform_1",
     "platform_2",
     "platform_3",
     "platform_4",
-    "platform_5",
 )
 FLOOR_ASSET_KEY = "floor"
+PLATFORM_COLLIDER_HEIGHT = 36
 
 
 def find_image_asset(asset_name):
@@ -102,10 +112,34 @@ def find_image_asset(asset_name):
     return None
 
 
+def is_preprocessed_image_path(path):
+    if not path:
+        return False
+    try:
+        return Path(path).resolve().parent == PROCESSED_ASSET_DIR.resolve()
+    except OSError:
+        return False
+
+
+def image_asset_path(asset_name):
+    path = find_image_asset(asset_name)
+    if path:
+        return path
+    return str(Path("assets/images") / f"{asset_name}.png")
+
+
+def needs_runtime_background_cleanup(path):
+    return not is_preprocessed_image_path(path)
+
+
 ENVIRONMENT_IMAGE_PATHS = {
     asset_name: find_image_asset(asset_name)
-    for asset_name in BACKGROUND_ASSET_KEYS + PLATFORM_ASSET_KEYS + (FLOOR_ASSET_KEY,)
+    for asset_name in BACKGROUND_ASSET_KEYS + PLATFORM_KEYS + (FLOOR_ASSET_KEY,)
 }
+
+
+def random_platform_key():
+    return random.choice(PLATFORM_KEYS)
 
 # These three images replace the old four-background setup.
 # To use better art later, keep these same filenames or change the names here.
@@ -229,10 +263,25 @@ def jump_height_pixels():
     return int(round((PLAYER_JUMP_STRENGTH ** 2) / (2 * GRAVITY)))
 
 
-def platform_from_layer(x, width, layer, sprite, visual_height=None, height=36, variation=0):
+def platform_from_layer(
+    x,
+    width,
+    layer,
+    sprite=None,
+    visual_height=None,
+    height=PLATFORM_COLLIDER_HEIGHT,
+    variation=0,
+):
     ratio = 0.8 if layer == 0 else 1.6
     base_y = GROUND_Y - height - int(round(jump_height_pixels() * ratio))
-    return platform(x, base_y + variation, width, height, sprite, visual_height=visual_height)
+    return platform(
+        x,
+        base_y + variation,
+        width,
+        height,
+        sprite or random_platform_key(),
+        visual_height=visual_height,
+    )
 
 
 def decoration(kind, x, y, width, height, layer="back"):
@@ -289,8 +338,8 @@ LEVEL_SECTIONS = [
                 None,
                 drop_through=False,
             ),
-            platform_from_layer(430, 300, 0, "platform_1", visual_height=112, variation=10),
-            platform_from_layer(800, 320, 1, "platform_2", visual_height=116, variation=-12),
+            platform_from_layer(430, 300, 0, visual_height=112, variation=10),
+            platform_from_layer(800, 320, 1, visual_height=116, variation=-12),
         ],
         "decorations": [
             decoration("broken_floor", 260, 950, 250, 34),
@@ -312,9 +361,9 @@ LEVEL_SECTIONS = [
         "start_x": 1200,
         "end_x": 2500,
         "platforms": [
-            platform_from_layer(1320, 320, 0, "platform_3", visual_height=120, variation=8),
-            platform_from_layer(1800, 340, 1, "platform_1", visual_height=118, variation=-16),
-            platform_from_layer(2200, 280, 0, "platform_5", visual_height=124, variation=14),
+            platform_from_layer(1320, 320, 0, visual_height=120, variation=8),
+            platform_from_layer(1800, 340, 1, visual_height=118, variation=-16),
+            platform_from_layer(2200, 280, 0, visual_height=124, variation=14),
         ],
         "decorations": [
             decoration("broken_desk", 1340, 914, 180, 76),
@@ -339,10 +388,10 @@ LEVEL_SECTIONS = [
         "start_x": 2500,
         "end_x": 3850,
         "platforms": [
-            platform_from_layer(2660, 300, 0, "platform_2", visual_height=118, variation=12),
-            platform_from_layer(3080, 290, 1, "platform_3", visual_height=112, variation=-18),
-            platform_from_layer(3460, 300, 0, "platform_1", visual_height=116, variation=10),
-            platform_from_layer(3840, 260, 1, "platform_5", visual_height=120, variation=-14),
+            platform_from_layer(2660, 300, 0, visual_height=118, variation=12),
+            platform_from_layer(3080, 290, 1, visual_height=112, variation=-18),
+            platform_from_layer(3460, 300, 0, visual_height=116, variation=10),
+            platform_from_layer(3840, 260, 1, visual_height=120, variation=-14),
         ],
         "decorations": [
             decoration("broken_floor", 2580, 952, 280, 36),
@@ -367,9 +416,9 @@ LEVEL_SECTIONS = [
         "start_x": 3850,
         "end_x": 5300,
         "platforms": [
-            platform_from_layer(4020, 320, 0, "platform_5", visual_height=132, variation=8),
-            platform_from_layer(4580, 300, 1, "platform_4", visual_height=130, variation=-20),
-            platform_from_layer(5000, 280, 0, "platform_2", visual_height=132, variation=12),
+            platform_from_layer(4020, 320, 0, visual_height=132, variation=8),
+            platform_from_layer(4580, 300, 1, visual_height=130, variation=-20),
+            platform_from_layer(5000, 280, 0, visual_height=132, variation=12),
         ],
         "decorations": [
             decoration("vines", 3960, 520, 120, 330, layer="front"),
@@ -395,11 +444,11 @@ LEVEL_SECTIONS = [
         "start_x": 5300,
         "end_x": 6600,
         "platforms": [
-            platform_from_layer(5340, 220, 0, "platform_1", visual_height=116, variation=14),
-            platform_from_layer(5680, 220, 1, "platform_3", visual_height=112, variation=-12),
-            platform_from_layer(6020, 220, 0, "platform_2", visual_height=112, variation=10),
-            platform_from_layer(6340, 220, 1, "platform_4", visual_height=120, variation=-16),
-            platform_from_layer(6540, 220, 0, "platform_5", visual_height=120, variation=8),
+            platform_from_layer(5340, 220, 0, visual_height=116, variation=14),
+            platform_from_layer(5680, 220, 1, visual_height=112, variation=-12),
+            platform_from_layer(6020, 220, 0, visual_height=112, variation=10),
+            platform_from_layer(6340, 220, 1, visual_height=120, variation=-16),
+            platform_from_layer(6540, 220, 0, visual_height=120, variation=8),
         ],
         "decorations": [
             decoration("elevator_door", 5320, 700, 180, 290),
@@ -425,10 +474,10 @@ LEVEL_SECTIONS = [
         "start_x": 6600,
         "end_x": 8100,
         "platforms": [
-            platform_from_layer(6680, 300, 0, "platform_1", visual_height=118, variation=10),
-            platform_from_layer(7160, 280, 1, "platform_2", visual_height=112, variation=-18),
-            platform_from_layer(7560, 320, 0, "platform_3", visual_height=118, variation=8),
-            platform_from_layer(7900, 300, 1, "platform_5", visual_height=130, variation=-14),
+            platform_from_layer(6680, 300, 0, visual_height=118, variation=10),
+            platform_from_layer(7160, 280, 1, visual_height=112, variation=-18),
+            platform_from_layer(7560, 320, 0, visual_height=118, variation=8),
+            platform_from_layer(7900, 300, 1, visual_height=130, variation=-14),
         ],
         "decorations": [
             decoration("shattered_window", 6660, 530, 280, 320),
@@ -454,9 +503,9 @@ LEVEL_SECTIONS = [
         "start_x": 8100,
         "end_x": LEVEL_WIDTH,
         "platforms": [
-            platform_from_layer(8340, 320, 0, "platform_4", visual_height=122, variation=12),
-            platform_from_layer(8840, 320, 1, "platform_1", visual_height=126, variation=-16),
-            platform_from_layer(9340, 300, 0, "platform_2", visual_height=118, variation=10),
+            platform_from_layer(8340, 320, 0, visual_height=122, variation=12),
+            platform_from_layer(8840, 320, 1, visual_height=126, variation=-16),
+            platform_from_layer(9340, 300, 0, visual_height=118, variation=10),
         ],
         "decorations": [
             decoration("rooftop_antenna", 8240, 700, 80, 290, layer="front"),
@@ -559,88 +608,51 @@ UPGRADES = [
 ]
 
 IMAGE_PATHS = {
-    "pickup_sheet": "assets/images/ammo_health_kit.png",
+    "pickup_sheet": image_asset_path("ammo_health_kit"),
+    "player_arms": image_asset_path("player_arms"),
 }
+
+PLAYER_BODY_SHEET_PATH = image_asset_path("new_player_sheet_noarms")
+WALKER_ZOMBIE_SHEET_PATH = image_asset_path("walker_zombie_sheet")
+WALKER_ZOMBIE_GROUND_SHEET_PATH = image_asset_path("walker_zombie_ground_sheet")
+TANK_ZOMBIE_SHEET_PATH = image_asset_path("tank_zombie_sheet")
+TANK_ZOMBIE_GROUND_SHEET_PATH = image_asset_path("tank_zombie_ground_sheet")
+FLYING_ZOMBIE_SHEET_PATH = image_asset_path("flying_zombie_sheet")
+BULLET_SHEET_PATH = image_asset_path("bullet_sheet")
 
 # Sprite sheets are sliced by animation.load_animation_set.
 # To add an animation later, add its frames to the sheet and add a named entry
 # under "animations" with the row number, frame columns, fps, and loop setting.
 SPRITE_SHEETS = {
-    # Player sheet configuration.
-    # This main sheet supplies idle, shoot, jump, and hurt. Individual
-    # animations can override it with their own "sheet" config, as run does.
+    # Player body sheet configuration. The aiming arms are a separate cached
+    # overlay image so idle/walk aiming can rotate without reslicing frames.
     "player": {
-        "path": "assets/images/new_player_sheet.png",
+        "path": PLAYER_BODY_SHEET_PATH,
         "columns": 4,
         "rows": 4,
         "frame_width": None,
         "frame_height": None,
+        "use_floor_grid": True,
         "margin": 0,
         "spacing": 0,
         "scale": 1,
-        # The source art is arranged as a 4x4 sheet, but the poses do not sit
-        # inside perfectly even cells. These rectangles keep each source frame
-        # from clipping into the row above/below it.
-        "frame_rects": [
-            [
-                (121, 49, 148, 250),
-                (394, 50, 149, 249),
-                (678, 49, 150, 250),
-                (967, 50, 151, 249),
-            ],
-            [
-                (106, 363, 194, 230),
-                (354, 363, 213, 230),
-                (657, 363, 191, 232),
-                (939, 363, 211, 227),
-            ],
-            [
-                (86, 636, 197, 227),
-                (368, 636, 237, 227),
-                (668, 636, 240, 227),
-                (951, 636, 193, 227),
-            ],
-            [
-                (84, 886, 198, 260),
-                (355, 901, 198, 225),
-                (639, 918, 305, 261),
-                (936, 922, 212, 257),
-            ],
-        ],
         "target_size": (PLAYER_WIDTH, PLAYER_HEIGHT),
-        "remove_light_background": True,
+        "remove_light_background": needs_runtime_background_cleanup(PLAYER_BODY_SHEET_PATH),
+        "background_min_value": 185,
+        "background_channel_spread": 52,
         "trim_transparent": True,
         "align": "bottom",
-        # Row mapping:
-        # row 0 idle loops, row 2 shoot plays once,
-        # row 3 frames 0-1 jump while airborne, row 3 frames 2-3 hurt once.
-        # The run animation uses player_running_sheet.png below. To assign a
-        # separate sheet to another animation, add a "sheet" block with its
-        # path/columns/rows to that animation config.
         "animations": {
-            "idle": {"row": 0, "frames": [0, 1, 2, 3], "fps": 8, "loop": True},
-            "run": {
-                "sheet": {
-                    "path": "assets/images/player_running_sheet.png",
-                    "columns": 8,
-                    "rows": 1,
-                    "frame_width": None,
-                    "frame_height": None,
-                    "margin": 0,
-                    "spacing": 0,
-                },
-                "row": 0,
-                "frames": [0, 1, 2, 3, 4, 5, 6, 7],
-                "fps": 12,
-                "loop": True,
-            },
-            "shoot": {"row": 2, "frames": [0, 1, 2, 3], "fps": 12, "loop": False},
-            "jump": {"row": 3, "frames": [0, 1], "fps": 10, "loop": True},
-            "hurt": {"row": 3, "frames": [2, 3], "fps": 10, "loop": False},
+            "idle": {"row": 0, "frames": [0], "fps": 2, "loop": True},
+            "walk": {"row": 0, "frames": [1, 2, 3, 2], "fps": 8, "loop": True},
+            "run": {"row": 1, "frames": [0, 1, 2, 3], "fps": 12, "loop": True},
+            "jump": {"row": 2, "frames": [0, 1], "fps": 8, "loop": True},
+            "fall": {"row": 2, "frames": [2, 3], "fps": 8, "loop": True},
+            "death": {"row": 3, "frames": [0, 1, 2, 3], "fps": 8, "loop": False},
         },
     },
     "walker_zombie": {
-        "path": "assets/images/walker_zombie_sheet.png",
+        "path": WALKER_ZOMBIE_SHEET_PATH,
         "columns": 4,
         "rows": 4,
         "frame_width": None,
@@ -649,7 +661,7 @@ SPRITE_SHEETS = {
         "spacing": 0,
         "scale": 1,
         "target_size": (WALKER_WIDTH, WALKER_HEIGHT),
-        "remove_light_background": True,
+        "remove_light_background": needs_runtime_background_cleanup(WALKER_ZOMBIE_SHEET_PATH),
         "trim_transparent": True,
         "align": "bottom",
         "animations": {
@@ -660,7 +672,7 @@ SPRITE_SHEETS = {
         },
     },
     "walker_zombie_ground": {
-        "path": "assets/images/walker_zombie_ground_sheet.png",
+        "path": WALKER_ZOMBIE_GROUND_SHEET_PATH,
         "columns": 4,
         "rows": 2,
         "frame_width": None,
@@ -669,7 +681,7 @@ SPRITE_SHEETS = {
         "spacing": 0,
         "scale": 1,
         "target_size": (WALKER_WIDTH, WALKER_HEIGHT),
-        "remove_light_background": True,
+        "remove_light_background": needs_runtime_background_cleanup(WALKER_ZOMBIE_GROUND_SHEET_PATH),
         "background_min_value": 220,
         "background_channel_spread": 32,
         "trim_transparent": True,
@@ -684,7 +696,7 @@ SPRITE_SHEETS = {
         },
     },
     "tank_zombie": {
-        "path": "assets/images/tank_zombie_sheet.png",
+        "path": TANK_ZOMBIE_SHEET_PATH,
         "columns": 4,
         "rows": 4,
         "frame_width": None,
@@ -693,7 +705,7 @@ SPRITE_SHEETS = {
         "spacing": 0,
         "scale": 1,
         "target_size": (TANK_WIDTH, TANK_HEIGHT),
-        "remove_light_background": True,
+        "remove_light_background": needs_runtime_background_cleanup(TANK_ZOMBIE_SHEET_PATH),
         "trim_transparent": True,
         "align": "bottom",
         "animations": {
@@ -704,7 +716,7 @@ SPRITE_SHEETS = {
         },
     },
     "tank_zombie_ground": {
-        "path": "assets/images/tank_zombie_ground_sheet.png",
+        "path": TANK_ZOMBIE_GROUND_SHEET_PATH,
         "columns": 4,
         "rows": 2,
         "frame_width": None,
@@ -713,7 +725,7 @@ SPRITE_SHEETS = {
         "spacing": 0,
         "scale": 1,
         "target_size": (TANK_WIDTH, TANK_HEIGHT),
-        "remove_light_background": True,
+        "remove_light_background": needs_runtime_background_cleanup(TANK_ZOMBIE_GROUND_SHEET_PATH),
         "background_min_value": 220,
         "background_channel_spread": 32,
         "trim_transparent": True,
@@ -728,27 +740,28 @@ SPRITE_SHEETS = {
         },
     },
     "flying_zombie": {
-        "path": "assets/images/flying_zombie_sheet.png",
+        "path": FLYING_ZOMBIE_SHEET_PATH,
         "columns": 4,
-        "rows": 4,
-        "frame_width": None,
-        "frame_height": None,
+        "rows": 3,
+        "frame_width": 362,
+        "frame_height": 362,
         "margin": 0,
         "spacing": 0,
         "scale": 1,
-        "target_size": (FLYING_WIDTH, FLYING_HEIGHT),
-        "remove_light_background": True,
-        "trim_transparent": True,
-        "align": "bottom",
+        "target_size": (FLYING_SPRITE_WIDTH, FLYING_SPRITE_HEIGHT),
+        "remove_light_background": needs_runtime_background_cleanup(FLYING_ZOMBIE_SHEET_PATH),
+        "trim_transparent": False,
+        "align": "center",
+        "draw_offset": FLYING_SPRITE_DRAW_OFFSET,
         "animations": {
-            "hover_idle": {"row": 0, "frames": [0, 1, 2, 3], "fps": 8, "loop": True},
-            "fly": {"row": 1, "frames": [0, 1, 2, 3], "fps": 10, "loop": True},
-            "attack": {"row": 2, "frames": [0, 1, 2, 3], "fps": 10, "loop": False},
-            "death": {"row": 3, "frames": [0, 1, 2, 3], "fps": 10, "loop": False},
+            "idle": {"row": 0, "frames": [0], "fps": 6, "loop": True},
+            "fly": {"row": 0, "frames": [0, 1, 2, 3, 2, 1], "fps": 8, "loop": True},
+            "attack": {"row": 1, "frames": [0, 1, 2, 3], "fps": 10, "loop": False},
+            "death": {"row": 2, "frames": [0, 1, 2, 3], "fps": 8, "loop": False},
         },
     },
     "bullet": {
-        "path": "assets/images/bullet_sheet.png",
+        "path": BULLET_SHEET_PATH,
         "columns": 4,
         "rows": 2,
         "frame_width": None,
@@ -757,7 +770,7 @@ SPRITE_SHEETS = {
         "spacing": 0,
         "scale": 1,
         "target_size": (BULLET_WIDTH, BULLET_HEIGHT),
-        "remove_light_background": True,
+        "remove_light_background": needs_runtime_background_cleanup(BULLET_SHEET_PATH),
         "trim_transparent": True,
         "align": "center",
         "animations": {

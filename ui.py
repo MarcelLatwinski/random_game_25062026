@@ -117,14 +117,10 @@ class UI:
         pygame.draw.rect(surface, COLOR_UI_BG, (bar_x, bar_y, bar_width, bar_height))
         pygame.draw.rect(surface, COLOR_HEALTH, (bar_x, bar_y, fill_width, bar_height))
         pygame.draw.rect(surface, COLOR_TEXT, (bar_x, bar_y, bar_width, bar_height), 3)
-        self.draw_text(
-            surface,
-            status,
-            SCREEN_WIDTH // 2 - 220,
-            bar_y + 46,
-            size=28,
-            bold=True,
-        )
+        status_font = load_font("Segoe UI", 28, bold=True)
+        status_surface = status_font.render(status, True, COLOR_TEXT)
+        status_x = (SCREEN_WIDTH - status_surface.get_width()) // 2
+        surface.blit(status_surface, (status_x, bar_y + 46))
 
     def draw_pause(self, surface, show_fps_counter=False):
         panel_width = 620

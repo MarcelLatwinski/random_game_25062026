@@ -51,6 +51,7 @@ class Enemy:
         self.state = "idle"
         self.active = True
         self.invulnerable = False
+        self.is_attacking = False
         self.spawn_state = None
         self.spawn_animation_state = None
         self.post_spawn_state = "idle"
@@ -76,6 +77,7 @@ class Enemy:
         self.dead = True
         self.active = False
         self.invulnerable = False
+        self.is_attacking = False
         self.state = "death"
         self.spawn_state = None
         self.spawn_animation_state = None
@@ -87,9 +89,10 @@ class Enemy:
             self.removable = True
 
     def start_attack(self):
-        if self.dead or not self.active:
+        if self.dead or not self.active or self.is_attacking:
             return
         if self.animator and self.animator.has_state(self.attack_state):
+            self.is_attacking = True
             self.state = self.attack_state
             self.animator.play_once(self.attack_state)
 
@@ -147,8 +150,10 @@ class Enemy:
             self.removable = True
             return
 
+        self.is_attacking = False
         self.state = "death"
-        self.animator.play("death")
+        if self.animator.current_state != "death":
+            self.animator.play_once("death")
         self.animator.update(dt)
         if self.animator.is_finished():
             self.removable = True
@@ -156,6 +161,16 @@ class Enemy:
     def update_animation(self, dt, movement_state):
         if not self.animator:
             self.state = movement_state
+            return
+
+        if self.is_attacking:
+            self.state = self.animator.current_state or self.attack_state
+            self.animator.update(dt)
+            if self.animator.is_finished():
+                self.is_attacking = False
+                if not self.dead and self.animator.has_state(movement_state):
+                    self.state = movement_state
+                    self.animator.play(movement_state)
             return
 
         if not self.animator.is_playing_once():
@@ -539,10 +554,19 @@ class TankZombie(GroundZombie):
 class FlyingZombie(Enemy):
     def __init__(self, x, y, image=None, animations=None):
         super().__init__(x, y, FLYING_WIDTH, FLYING_HEIGHT, FLYING_HP, FLYING_SPEED, FLYING_DAMAGE, image=image, animations=animations, color=COLOR_FLYING)
+        if self.animator and self.animator.has_state("fly"):
+            self.state = "fly"
+            self.animator.play("fly")
 
     def update(self, player, platforms, dt):
         if self.dead:
             self.update_death_animation(dt)
+            return
+
+        if self.is_attacking:
+            self.vx = 0
+            self.vy = 0
+            self.update_animation(dt, "fly")
             return
 
         dx = player.rect.centerx - self.rect.centerx
@@ -554,4 +578,4 @@ class FlyingZombie(Enemy):
             self.move_y((dy / distance) * self.speed)
             self.update_animation(dt, "fly")
         else:
-            self.update_animation(dt, "hover_idle")
+            self.update_animation(dt, "idle")
