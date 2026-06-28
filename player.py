@@ -23,7 +23,6 @@ from settings import (
     MAGAZINE_SIZE,
     STARTING_MAG_AMMO,
     STARTING_RESERVE_AMMO,
-    MAX_RESERVE_AMMO,
     RELOAD_DURATION,
     RELOAD_PROMPT_DURATION,
     RELOAD_PROMPT_RISE,
@@ -214,6 +213,8 @@ ARM_DRAW_WIDTH_RATIO = 0.49
 
 # Muzzle position as ratio along the arm (for bullet spawn point)
 MUZZLE_DISTANCE_RATIO = 0.42
+DROP_THROUGH_CLEARANCE = 4
+DROP_THROUGH_MAX_TIME = 0.7
 
 
 def rotate_around_pivot(image, angle_degrees, image_pivot, target_pivot):
@@ -323,12 +324,14 @@ class Player:
         self.magazine_size = MAGAZINE_SIZE
         self.current_ammo_in_gun = STARTING_MAG_AMMO
         self.reserve_ammo = STARTING_RESERVE_AMMO
-        self.max_reserve_ammo = MAX_RESERVE_AMMO
         self.reload_until = 0
         self.reload_prompt_age = None
         self.reload_font = pygame.font.SysFont("Segoe UI", 28, bold=True)
         self.color = COLOR_PLAYER
         self.drop_requested = False
+        self.drop_through_platform_id = None
+        self.drop_through_timer = 0.0
+        self.previous_rect = self.rect.copy()
 
     def prepare_arms_image(self, arms_image):
         if arms_image is None:
@@ -492,7 +495,7 @@ class Player:
 
     def add_reserve_ammo(self, amount):
         old_reserve = self.reserve_ammo
-        self.reserve_ammo = min(self.max_reserve_ammo, self.reserve_ammo + amount)
+        self.reserve_ammo += amount
         return self.reserve_ammo - old_reserve
 
     def heal(self, amount):
@@ -559,6 +562,8 @@ class Player:
             movement_speed *= self.run_speed_multiplier
 
         self.drop_requested = bool(keys[pygame.K_s] or keys[pygame.K_DOWN])
+        if self.drop_through_timer > 0:
+            self.drop_through_timer = max(0.0, self.drop_through_timer - dt)
         self.vx = 0
         if left:
             self.vx = -movement_speed
@@ -569,14 +574,14 @@ class Player:
             self.vy = -self.jump_strength
             self.on_ground = False
         elif self.drop_requested and self.on_ground and self.vy >= 0:
-            self.on_ground = False
-            self.vy = 4
+            self.start_drop_through(platforms)
 
         if self.vx > 0:
             self.facing_right = True
         elif self.vx < 0:
             self.facing_right = False
 
+        self.previous_rect = self.rect.copy()
         self.rect.x += self.vx
         self.collide_horizontal(platforms)
 
@@ -585,6 +590,7 @@ class Player:
         self.rect.y += self.vy
         self.on_ground = False
         self.collide_vertical(platforms)
+        self.clear_finished_drop_through(platforms)
 
         if self.rect.left < 0:
             self.rect.left = 0
@@ -632,6 +638,8 @@ class Player:
 
     def collide_horizontal(self, platforms):
         for platform in platforms:
+            if getattr(platform, "drop_through", True):
+                continue
             if self.rect.colliderect(platform.rect):
                 if self.vx > 0:
                     self.rect.right = platform.rect.left
@@ -643,8 +651,13 @@ class Player:
             if not self.rect.colliderect(platform.rect):
                 continue
 
-            if self.drop_requested and self.vy >= 0 and getattr(platform, "drop_through", True):
-                return
+            if getattr(platform, "drop_through", True):
+                if self.should_ignore_drop_through_platform(platform):
+                    continue
+                if self.vy <= 0:
+                    continue
+                if self.previous_rect.bottom > platform.rect.top + 2:
+                    continue
 
             if self.vy > 0:
                 self.rect.bottom = platform.rect.top
@@ -653,6 +666,49 @@ class Player:
             elif self.vy < 0:
                 self.rect.top = platform.rect.bottom
                 self.vy = 0
+
+    def start_drop_through(self, platforms):
+        platform = self.platform_underfoot(platforms)
+        if not platform:
+            return
+
+        self.drop_through_platform_id = platform.id
+        self.drop_through_timer = DROP_THROUGH_MAX_TIME
+        self.on_ground = False
+        self.vy = max(self.vy, 4)
+
+    def platform_underfoot(self, platforms):
+        for platform in platforms:
+            if not getattr(platform, "drop_through", True):
+                continue
+            if abs(self.rect.bottom - platform.rect.top) > 8:
+                continue
+            if self.rect.right <= platform.rect.left + 4:
+                continue
+            if self.rect.left >= platform.rect.right - 4:
+                continue
+            return platform
+        return None
+
+    def should_ignore_drop_through_platform(self, platform):
+        if self.drop_through_platform_id == platform.id:
+            return True
+        return False
+
+    def clear_finished_drop_through(self, platforms):
+        if self.drop_through_platform_id is None:
+            return
+
+        for platform in platforms:
+            if platform.id != self.drop_through_platform_id:
+                continue
+            if self.rect.top > platform.rect.bottom + DROP_THROUGH_CLEARANCE:
+                self.drop_through_platform_id = None
+                self.drop_through_timer = 0.0
+            return
+
+        if self.drop_through_timer == 0.0:
+            self.drop_through_platform_id = None
 
     def should_draw_aim_arms(self):
         if not self.arms_image or self.is_running or self.is_dying or self.dead:

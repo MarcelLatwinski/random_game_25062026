@@ -174,6 +174,7 @@ def load_sheet_frames(sheet_config):
         sheet_config.get("trim_transparent", False),
         sheet_config.get("align"),
         sheet_config.get("use_floor_grid", False),
+        repr(sheet_config.get("keep_largest_component_rows")),
         repr(sheet_config.get("frame_rects")),
     )
     if cache_key in _SHEET_FRAME_CACHE:
@@ -261,6 +262,9 @@ def slice_sheet(sheet, sheet_config):
 
             if sheet_config.get("remove_light_background", False):
                 remove_light_background(frame, sheet_config)
+
+            if should_keep_largest_component(sheet_config, row):
+                keep_largest_opaque_component(frame)
 
             if sheet_config.get("trim_transparent", False):
                 frame = trim_and_scale_frame(frame, sheet_config)
@@ -356,6 +360,57 @@ def scale_frame(frame, sheet_config):
         )
         return pygame.transform.scale(frame, scaled_size)
     return frame
+
+
+def should_keep_largest_component(sheet_config, row):
+    rows = sheet_config.get("keep_largest_component_rows")
+    return rows is not None and row in rows
+
+
+def keep_largest_opaque_component(surface):
+    width = surface.get_width()
+    height = surface.get_height()
+    visited = set()
+    largest_component = []
+    opaque_pixels = []
+
+    surface.lock()
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in visited:
+                continue
+            if surface.get_at((x, y)).a <= 0:
+                continue
+
+            component = []
+            to_check = [(x, y)]
+            visited.add((x, y))
+            while to_check:
+                px, py = to_check.pop()
+                component.append((px, py))
+                for neighbor in ((px - 1, py), (px + 1, py), (px, py - 1), (px, py + 1)):
+                    nx, ny = neighbor
+                    if not (0 <= nx < width and 0 <= ny < height):
+                        continue
+                    if neighbor in visited:
+                        continue
+                    if surface.get_at((nx, ny)).a <= 0:
+                        continue
+                    visited.add(neighbor)
+                    to_check.append(neighbor)
+
+            opaque_pixels.extend(component)
+            if len(component) > len(largest_component):
+                largest_component = component
+
+    keep_pixels = set(largest_component)
+    for pixel in opaque_pixels:
+        if pixel in keep_pixels:
+            continue
+        x, y = pixel
+        color = surface.get_at((x, y))
+        surface.set_at((x, y), (color.r, color.g, color.b, 0))
+    surface.unlock()
 
 
 def trim_and_scale_frame(frame, sheet_config):

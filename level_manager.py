@@ -17,6 +17,7 @@ from settings import (
     ENEMY_PLATFORM_QUERY_MARGIN,
     ENEMY_SPEED_SCALE_PER_LEVEL,
     ENEMY_HEALTH_SCALE_PER_LEVEL,
+    GROUND_Y,
 )
 from enemy import WalkerZombie, TankZombie, FlyingZombie
 
@@ -102,6 +103,49 @@ class LevelManager:
             return dict(item)
         return item
 
+    def platform_rect_from_data(self, platform_data):
+        if isinstance(platform_data, dict):
+            return pygame.Rect(
+                platform_data["x"],
+                platform_data["y"],
+                platform_data["width"],
+                platform_data["height"],
+            )
+        return pygame.Rect(platform_data)
+
+    def is_floor_platform_data(self, platform_data):
+        rect = self.platform_rect_from_data(platform_data)
+        return (
+            rect.width >= self.level_width * 0.9
+            and rect.top >= GROUND_Y
+        )
+
+    def surface_y_for_x(self, x, requested_y):
+        if requested_y == GROUND_Y:
+            return GROUND_Y
+
+        matching_platforms = []
+        for platform_data in self.platforms:
+            if self.is_floor_platform_data(platform_data):
+                continue
+            rect = self.platform_rect_from_data(platform_data)
+            if rect.left <= x <= rect.right:
+                matching_platforms.append(rect)
+
+        if not matching_platforms:
+            return GROUND_Y
+
+        closest_platform = min(
+            matching_platforms,
+            key=lambda rect: abs(rect.top - requested_y),
+        )
+        return closest_platform.top
+
+    def anchor_template_to_surface(self, template):
+        anchored = dict(template)
+        anchored["y"] = self.surface_y_for_x(anchored["x"], anchored.get("y", GROUND_Y))
+        return anchored
+
     def build_spawn_points(self):
         spawn_points = []
         current_level_number = self.current_level_number()
@@ -117,6 +161,7 @@ class LevelManager:
         return sorted(spawn_points, key=lambda point: point["trigger_x"])
 
     def build_spawn_point(self, template):
+        template = self.anchor_template_to_surface(template)
         spawn_point = {
             key: value
             for key, value in template.items()
@@ -159,6 +204,7 @@ class LevelManager:
             if current_level_number < min_level:
                 continue
 
+            template = self.anchor_template_to_surface(template)
             pickup_point = {
                 key: value
                 for key, value in template.items()
@@ -225,7 +271,9 @@ class LevelManager:
 
         spacing = spawn_point.get("spacing", 80)
         offset = (spawn_index - (spawn_count - 1) / 2) * spacing
-        enemy.rect.midbottom = (round(spawn_point["x"] + offset), spawn_point["y"])
+        spawn_x = round(spawn_point["x"] + offset)
+        spawn_y = self.surface_y_for_x(spawn_x, spawn_point["y"])
+        enemy.rect.midbottom = (spawn_x, spawn_y)
         enemy.sync_position()
         enemy.section = spawn_point.get("section")
         self.apply_level_difficulty(enemy)

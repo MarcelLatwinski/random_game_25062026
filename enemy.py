@@ -55,6 +55,7 @@ class Enemy:
         self.spawn_state = None
         self.spawn_animation_state = None
         self.post_spawn_state = "idle"
+        self.previous_rect = self.rect.copy()
 
     def is_active(self):
         return self.active and not self.dead
@@ -193,6 +194,14 @@ class Enemy:
         self.pos_x = float(self.rect.x)
         self.pos_y = float(self.rect.y)
 
+    def get_head_rect(self):
+        return pygame.Rect(
+            self.rect.x,
+            self.rect.y,
+            self.rect.width,
+            max(1, int(self.rect.height * 0.35)),
+        )
+
     def draw(self, surface, camera_x=0):
         draw_rect = self.rect.move(-camera_x, 0)
         image = self.animator.current_frame() if self.animator else self.image
@@ -272,6 +281,7 @@ class GroundZombie(Enemy):
         else:
             self.chase_on_same_platform(player, platforms)
 
+        self.previous_rect = self.rect.copy()
         self.move_x(self.vx)
         self.collide_horizontal(platforms)
 
@@ -489,6 +499,8 @@ class GroundZombie(Enemy):
 
     def collide_horizontal(self, platforms):
         for platform in platforms:
+            if getattr(platform, "drop_through", True):
+                continue
             if self.rect.colliderect(platform.rect):
                 if self.vx > 0:
                     self.rect.right = platform.rect.left
@@ -499,6 +511,11 @@ class GroundZombie(Enemy):
     def collide_vertical(self, platforms):
         for platform in platforms:
             if self.rect.colliderect(platform.rect):
+                if getattr(platform, "drop_through", True):
+                    if self.vy <= 0:
+                        continue
+                    if self.previous_rect.bottom > platform.rect.top + 2:
+                        continue
                 if self.vy > 0:
                     self.rect.bottom = platform.rect.top
                     self.vy = 0

@@ -1,5 +1,6 @@
 import pygame
 import random
+from pathlib import Path
 from asset_manager import AssetManager
 from settings import (
     SCREEN_WIDTH,
@@ -9,6 +10,7 @@ from settings import (
     COLOR_BACKGROUND,
     COLOR_TEXT,
     SHOW_FPS_COUNTER,
+    DEBUG_HEADSHOTS,
     DRAW_PROCEDURAL_DECORATIONS,
     DRAW_PLATFORM_VISUALS,
     DRAW_GROUND_PLATFORM_VISUAL,
@@ -30,6 +32,9 @@ from settings import (
     HEALTH_PICKUP_AMOUNT,
     AMMO_DROP_CHANCE,
     HEALTH_DROP_CHANCE,
+    HEADSHOT_INDICATOR_MAX_SIZE,
+    GROUND_Y,
+    LEVELS,
 )
 from animation import flipped_surface
 from player import Player
@@ -41,14 +46,46 @@ from platform_nav import PlatformGraph, DEBUG_PATHS
 from pickup import Pickup
 
 GAME_STATES = [
-    "MAIN_MENU",
     "LOADING",
+    "TITLE",
+    "MAIN_MENU",
     "PLAYING",
     "UPGRADE_SELECT",
     "PAUSED",
     "GAME_OVER",
     "VICTORY",
 ]
+
+LOADING_FINISH_DELAY = 0.35
+
+
+class HeadshotIndicator:
+    def __init__(self, x, y, image):
+        self.image = image
+        self.x = float(x)
+        self.y = float(y)
+        self.lifetime = 1.0
+        self.age = 0.0
+        self.float_speed = 45
+        self.alive = True
+
+    def update(self, dt):
+        self.age += dt
+        self.y -= self.float_speed * dt
+        if self.age >= self.lifetime:
+            self.alive = False
+
+    def draw(self, surface, camera_x=0):
+        if not self.image:
+            return
+
+        progress = min(self.age / self.lifetime, 1.0)
+        alpha = int(255 * (1.0 - progress))
+        image = self.image.copy()
+        image.set_alpha(alpha)
+        rect = image.get_rect(center=(round(self.x - camera_x), round(self.y)))
+        surface.blit(image, rect)
+
 
 class Game:
     def __init__(self):
@@ -60,7 +97,7 @@ class Game:
         )
         pygame.display.set_caption("Zombie Platform Shooter")
         self.clock = pygame.time.Clock()
-        self.state = "MAIN_MENU"
+        self.state = "LOADING"
         self.assets = AssetManager()
         self.images = self.assets.images
         self.scaled_background = None
@@ -69,8 +106,10 @@ class Game:
         self.loading_tasks = []
         self.loading_task_index = 0
         self.loading_task_total = 0
-        self.loading_status = "Preparing level"
-        self.loading_context = "new_game"
+        self.loading_status = "Preparing game..."
+        self.loading_context = "boot"
+        self.loading_finished_at = None
+        self.assets_ready = False
         self.level_manager = LevelManager()
         self.preloaded_sections = set()
         self.platforms = []
@@ -80,12 +119,20 @@ class Game:
         self.player = self.create_player()
         self.upgrade_manager = UpgradeManager()
         self.ui = UI()
+        self.ui.load_loading_asset(self.assets)
         self.bullets = []
         self.pickups = []
-        self.last_mouse = (0, 0)
+        self.headshot_indicators = []
+        self.last_mouse = pygame.mouse.get_pos()
         self.camera_x = 0
         self.show_fps_counter = SHOW_FPS_COUNTER
         self.debug_font = pygame.font.SysFont(None, 20)
+        self.pause_menu_opened_at = 0.0
+        self.hotbar_menu_pressed_until = 0.0
+        self.pause_pressed_action = None
+        self.pause_pressed_until = 0.0
+        self.cursor_is_hand = False
+        self.load_assets_with_progress()
 
     def load_level_layout(self):
         self.platforms = [
@@ -181,7 +228,34 @@ class Game:
                 transparent_min_value=185,
                 transparent_channel_spread=52,
             )
+        if key == "headshot":
+            image = self.load_image(
+                key,
+                path,
+                remove_light_pixels=True,
+                trim_transparent=True,
+                transparent_min_value=205,
+                transparent_channel_spread=46,
+            )
+            return self.scale_headshot_image(image)
         return self.load_image(key, path)
+
+    def scale_headshot_image(self, image):
+        if not image:
+            return None
+
+        longest_side = max(image.get_width(), image.get_height())
+        if longest_side <= HEADSHOT_INDICATOR_MAX_SIZE:
+            return image
+
+        scale = HEADSHOT_INDICATOR_MAX_SIZE / longest_side
+        size = (
+            max(1, int(round(image.get_width() * scale))),
+            max(1, int(round(image.get_height() * scale))),
+        )
+        scaled = pygame.transform.smoothscale(image, size)
+        self.images["headshot"] = scaled
+        return scaled
 
     def load_animation(self, key):
         sheet_config = SPRITE_SHEETS.get(key)
@@ -291,6 +365,15 @@ class Game:
     def add_loading_task(self, tasks, label, function, *args):
         tasks.append((label, lambda function=function, args=args: function(*args)))
 
+    def image_loading_label(self, fallback_key, path):
+        if path:
+            return f"Loading {Path(path).name}"
+        return f"Loading {fallback_key}"
+
+    def animation_loading_label(self, key):
+        sheet_config = SPRITE_SHEETS.get(key, {})
+        return self.image_loading_label(key, sheet_config.get("path"))
+
     def current_level_section_names(self):
         return [
             section.get("name")
@@ -298,7 +381,10 @@ class Game:
             if section.get("name")
         ]
 
-    def prepare_start_loading_tasks(self):
+    def load_assets_with_progress(self):
+        self.prepare_start_loading_tasks(include_title_assets=True, load_all_animations=True)
+
+    def prepare_start_loading_tasks(self, include_title_assets=False, load_all_animations=False):
         self.level_manager.start_level()
         self.load_level_layout()
         section_names = self.current_level_section_names()
@@ -306,21 +392,31 @@ class Game:
         # Each task runs on a separate loading update. That lets the loading
         # screen repaint instead of freezing during one large asset load.
         tasks = []
+        if include_title_assets:
+            self.add_loading_task(tasks, "Preparing fonts", self.ui.prepare_fonts)
+            self.add_loading_task(tasks, "Loading title_screen.png", self.ui.load_title_asset, self.assets)
+            self.add_loading_task(tasks, "Loading new_hotbar.png", self.ui.load_hotbar_asset, self.assets)
+            self.add_loading_task(tasks, "Loading escape_menu.png", self.ui.load_escape_menu_asset, self.assets)
+
         for key, path in IMAGE_PATHS.items():
-            self.add_loading_task(tasks, f"Loading {key}", self.load_core_image, key, path)
+            self.add_loading_task(tasks, self.image_loading_label(key, path), self.load_core_image, key, path)
 
         self.add_loading_task(tasks, "Preparing pickups", self.load_pickup_sprites)
 
         for key in self.current_level_visual_asset_keys(section_names=section_names):
             if key in ENVIRONMENT_IMAGE_PATHS:
-                self.add_loading_task(tasks, f"Loading {key}", self.load_environment_image, key)
+                path = ENVIRONMENT_IMAGE_PATHS.get(key)
+                self.add_loading_task(tasks, self.image_loading_label(key, path), self.load_environment_image, key)
 
-        animation_keys = ["player", "bullet"]
-        for key in self.current_level_enemy_asset_keys(section_names=section_names):
-            if key not in animation_keys:
-                animation_keys.append(key)
+        if load_all_animations:
+            animation_keys = sorted(SPRITE_SHEETS)
+        else:
+            animation_keys = ["player", "bullet"]
+            for key in self.current_level_enemy_asset_keys(section_names=section_names):
+                if key not in animation_keys:
+                    animation_keys.append(key)
         for key in animation_keys:
-            self.add_loading_task(tasks, f"Loading {key}", self.load_animation, key)
+            self.add_loading_task(tasks, self.animation_loading_label(key), self.load_animation, key)
 
         self.add_loading_task(tasks, "Preparing backgrounds", self.prepare_parallax_cache)
         self.add_loading_task(tasks, "Preparing platform sprites", self.prepare_platform_surfaces)
@@ -329,6 +425,7 @@ class Game:
         self.loading_tasks = tasks
         self.loading_task_index = 0
         self.loading_task_total = len(tasks)
+        self.loading_finished_at = None
 
     def prepare_runtime_caches(self, section_names=None):
         self.prepare_parallax_cache()
@@ -373,6 +470,10 @@ class Game:
         return platform.rect.width < self.level_manager.level_width * 0.9
 
     def request_start_game(self):
+        if self.assets_ready:
+            self.start_loaded_game()
+            return
+
         self.level_manager.reset()
         self.load_level_layout()
         self.loading_context = "new_game"
@@ -382,6 +483,7 @@ class Game:
         self.loading_task_index = 0
         self.loading_task_total = 0
         self.loading_status = "Preparing level"
+        self.loading_finished_at = None
 
     def request_next_level_loading(self):
         self.loading_context = "next_level"
@@ -391,6 +493,7 @@ class Game:
         self.loading_task_index = 0
         self.loading_task_total = 0
         self.loading_status = "Preparing next level"
+        self.loading_finished_at = None
 
     def start_game(self):
         self.level_manager.reset()
@@ -406,23 +509,47 @@ class Game:
         self.player = self.create_player()
         self.bullets = []
         self.pickups = []
+        self.headshot_indicators = []
         self.spawn_level_pickups()
         self.update_camera()
         self.mark_sections_preloaded(self.current_level_section_names())
         self.state = "PLAYING"
         self.clear_loading_state()
 
+    def finish_boot_loading(self):
+        self.assets_ready = True
+        self.state = "TITLE"
+        self.clear_loading_state()
+
+    def start_loaded_game(self):
+        self.level_manager.reset()
+        self.load_level_layout()
+        self.prepare_runtime_caches(section_names=self.current_level_section_names())
+        self.preloaded_sections = set()
+        self.player = self.create_player()
+        self.bullets = []
+        self.pickups = []
+        self.headshot_indicators = []
+        self.spawn_level_pickups()
+        self.update_camera()
+        self.mark_sections_preloaded(self.current_level_section_names())
+        self.state = "PLAYING"
+
     def finish_next_level(self):
         self.preloaded_sections = set()
         self.reset_player_for_level()
         self.bullets = []
         self.pickups = []
+        self.headshot_indicators = []
         self.spawn_level_pickups()
         self.mark_sections_preloaded(self.current_level_section_names())
         self.state = "PLAYING"
         self.clear_loading_state()
 
     def finish_loading(self):
+        if self.loading_context == "boot":
+            self.finish_boot_loading()
+            return
         if self.loading_context == "next_level":
             self.finish_next_level()
             return
@@ -434,25 +561,34 @@ class Game:
         self.loading_task_index = 0
         self.loading_task_total = 0
         self.loading_status = "Preparing level"
+        self.loading_finished_at = None
 
-    def update_loading(self):
+    def update_loading_screen(self, now):
+        self.update_loading(now)
+
+    def update_loading(self, now):
         if not self.loading_screen_drawn:
             return
 
         if not self.loading_tasks:
-            self.prepare_start_loading_tasks()
-            self.loading_status = "Loading 0 / {}".format(self.loading_task_total)
+            self.prepare_start_loading_tasks(include_title_assets=self.loading_context == "boot")
+            self.loading_status = "Preparing game..."
             return
 
         if self.loading_task_index < len(self.loading_tasks):
             label, task = self.loading_tasks[self.loading_task_index]
-            self.loading_status = "{} ({} / {})".format(
-                label,
-                self.loading_task_index + 1,
-                self.loading_task_total,
-            )
+            self.loading_status = label
             task()
             self.loading_task_index += 1
+            self.loading_finished_at = None
+            return
+
+        self.loading_status = "Preparing game..."
+        if self.loading_finished_at is None:
+            self.loading_finished_at = now
+            return
+
+        if now - self.loading_finished_at < LOADING_FINISH_DELAY:
             return
 
         self.finish_loading()
@@ -468,14 +604,76 @@ class Game:
         self.player = self.create_player()
         self.bullets = []
         self.pickups = []
+        self.headshot_indicators = []
         self.preloaded_sections = set()
         self.update_camera()
-        self.state = "MAIN_MENU"
+        self.state = "TITLE"
         self.loading_screen_drawn = False
         self.loading_tasks = []
         self.loading_task_index = 0
         self.loading_task_total = 0
         self.loading_status = "Preparing level"
+        self.pause_menu_opened_at = 0.0
+        self.hotbar_menu_pressed_until = 0.0
+        self.pause_pressed_action = None
+        self.pause_pressed_until = 0.0
+
+    def is_title_state(self):
+        return self.state in ("TITLE", "MAIN_MENU")
+
+    def open_pause_menu(self, now):
+        self.state = "PAUSED"
+        self.pause_menu_opened_at = now
+        self.pause_pressed_action = None
+        self.pause_pressed_until = 0.0
+
+    def close_pause_menu(self):
+        self.state = "PLAYING"
+        self.pause_pressed_action = None
+        self.pause_pressed_until = 0.0
+
+    def handle_pause_action(self, action, now):
+        if not action:
+            return
+
+        self.pause_pressed_action = action
+        self.pause_pressed_until = now + 0.12
+        if action == "resume":
+            self.close_pause_menu()
+        elif action == "fps":
+            self.show_fps_counter = not self.show_fps_counter
+        elif action == "debug":
+            import settings
+            settings.DEBUG_AIM_PIVOT = not settings.DEBUG_AIM_PIVOT
+        elif action == "main_menu":
+            self.reset()
+        elif action == "quit":
+            pygame.quit()
+            raise SystemExit
+
+    def update_cursor(self):
+        wants_hand = False
+        if self.is_title_state():
+            wants_hand = self.ui.start_button_rect(self.screen).collidepoint(self.last_mouse)
+        elif self.state == "PLAYING":
+            wants_hand = self.ui.hotbar_menu_button_rect(self.screen).collidepoint(self.last_mouse)
+        elif self.state == "PAUSED":
+            wants_hand = self.ui.pause_menu_action_at(self.screen, self.last_mouse) is not None
+
+        if wants_hand == self.cursor_is_hand:
+            return
+
+        self.cursor_is_hand = wants_hand
+        hand_cursor = getattr(pygame, "SYSTEM_CURSOR_HAND", None)
+        arrow_cursor = getattr(pygame, "SYSTEM_CURSOR_ARROW", None)
+        if hand_cursor is None or arrow_cursor is None:
+            return
+
+        cursor = hand_cursor if wants_hand else arrow_cursor
+        try:
+            pygame.mouse.set_cursor(cursor)
+        except pygame.error:
+            pass
 
     def run(self):
         running = True
@@ -485,6 +683,7 @@ class Game:
             dt = min(self.clock.tick(FPS) / 1000, MAX_FRAME_DT)
             now = pygame.time.get_ticks() / 1000
             self.handle_events(now)
+            self.update_cursor()
             self.update(dt, now)
             self.draw()
             pygame.display.flip()
@@ -498,15 +697,27 @@ class Game:
             if event.type == pygame.MOUSEMOTION:
                 self.last_mouse = event.pos
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if self.state == "MAIN_MENU":
-                    self.request_start_game()
+                self.last_mouse = event.pos
+                if self.is_title_state():
+                    if self.ui.start_button_rect(self.screen).collidepoint(event.pos):
+                        self.request_start_game()
                 elif self.state == "PLAYING":
+                    hotbar_action = self.ui.handle_hotbar_click(self.screen, event.pos)
+                    if hotbar_action == "menu":
+                        self.hotbar_menu_pressed_until = now + 0.12
+                        self.open_pause_menu(now)
+                        continue
+                    if hotbar_action == "hud":
+                        continue
                     keys = pygame.key.get_pressed()
                     if self.player.run_input_active(keys):
                         continue
                     bullet = self.player.shoot(self.screen_to_world(self.last_mouse), now)
                     if bullet:
                         self.bullets.append(bullet)
+                elif self.state == "PAUSED":
+                    action = self.ui.pause_menu_action_at(self.screen, event.pos)
+                    self.handle_pause_action(action, now)
                 elif self.state == "UPGRADE_SELECT":
                     self.handle_upgrade_click(event.pos)
                 elif self.state in ["GAME_OVER", "VICTORY"]:
@@ -514,9 +725,13 @@ class Game:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     if self.state == "PLAYING":
-                        self.state = "PAUSED"
+                        self.open_pause_menu(now)
                     elif self.state == "PAUSED":
-                        self.state = "PLAYING"
+                        self.close_pause_menu()
+                    continue
+                if self.is_title_state() and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    self.request_start_game()
+                    continue
                 if event.key == pygame.K_f and self.state == "PAUSED":
                     self.show_fps_counter = not self.show_fps_counter
                 if event.key == pygame.K_d and self.state == "PAUSED":
@@ -586,7 +801,7 @@ class Game:
 
     def update(self, dt, now):
         if self.state == "LOADING":
-            self.update_loading()
+            self.update_loading_screen(now)
             return
         if self.state == "GAME_OVER":
             self.player.update_death_animation(dt)
@@ -607,6 +822,7 @@ class Game:
             self.spawn_pickups_from_removed_enemies(removed_enemies)
             self.update_bullets(dt)
             self.check_collisions(now)
+            self.update_headshot_indicators(dt)
             self.update_pickups()
             if self.player.health <= 0:
                 self.player.die()
@@ -636,6 +852,25 @@ class Game:
             )
             if not bullet.update(bullet_platforms, dt, self.level_manager.level_width):
                 del self.bullets[index]
+
+    def update_headshot_indicators(self, dt):
+        for indicator in self.headshot_indicators[:]:
+            indicator.update(dt)
+            if not indicator.alive:
+                self.headshot_indicators.remove(indicator)
+
+    def spawn_headshot_indicator(self, enemy):
+        image = self.images.get("headshot")
+        if not image:
+            return
+
+        self.headshot_indicators.append(
+            HeadshotIndicator(
+                enemy.rect.centerx,
+                enemy.rect.top - 20,
+                image,
+            )
+        )
 
     def spawn_pickups_from_removed_enemies(self, enemies):
         for enemy in enemies:
@@ -671,6 +906,7 @@ class Game:
         if amount is None:
             amount = AMMO_PICKUP_AMOUNT if pickup_type == "ammo" else HEALTH_PICKUP_AMOUNT
         image = self.images.get(f"{pickup_type}_pickup")
+        y = self.surface_y_for_pickup(x, y)
         self.pickups.append(
             Pickup(
                 pickup_type,
@@ -682,6 +918,25 @@ class Game:
                 image=image,
             )
         )
+
+    def surface_y_for_pickup(self, x, requested_y):
+        if requested_y == GROUND_Y:
+            return GROUND_Y
+
+        platform_rects = [
+            platform.rect
+            for platform in self.platforms
+            if getattr(platform, "drop_through", True)
+            and platform.rect.left <= x <= platform.rect.right
+        ]
+        if not platform_rects:
+            return GROUND_Y
+
+        closest_platform = min(
+            platform_rects,
+            key=lambda rect: abs(rect.top - requested_y),
+        )
+        return closest_platform.top
 
     def update_pickups(self):
         for index in range(len(self.pickups) - 1, -1, -1):
@@ -709,7 +964,11 @@ class Game:
                 if not self.rects_near_for_collision(enemy.rect, bullet.rect):
                     continue
                 if enemy.rect.colliderect(bullet.rect):
-                    enemy.take_damage(bullet.damage)
+                    damage = getattr(bullet, "damage", 1)
+                    if enemy.get_head_rect().colliderect(bullet.rect):
+                        damage *= 2
+                        self.spawn_headshot_indicator(enemy)
+                    enemy.take_damage(damage)
                     bullet.start_impact()
                     break
 
@@ -722,20 +981,34 @@ class Game:
         )
 
     def draw(self):
-        if self.state == "MAIN_MENU":
-            self.ui.draw_main_menu(self.screen)
+        now = pygame.time.get_ticks() / 1000
+        if self.is_title_state():
+            self.ui.draw_title_screen(self.screen, self.last_mouse, now)
             return
         if self.state == "LOADING":
             self.ui.draw_loading(
                 self.screen,
                 progress=self.loading_progress(),
                 status=self.loading_status,
+                now=now,
+                loaded_count=self.loading_task_index,
+                total_count=self.loading_task_total,
             )
             self.loading_screen_drawn = True
             return
         if self.state == "PAUSED":
             self.draw_gameplay()
-            self.ui.draw_pause(self.screen, self.show_fps_counter)
+            pressed_action = None
+            if now < self.pause_pressed_until:
+                pressed_action = self.pause_pressed_action
+            self.ui.draw_pause(
+                self.screen,
+                self.show_fps_counter,
+                mouse_pos=self.last_mouse,
+                now=now,
+                opened_at=self.pause_menu_opened_at,
+                pressed_action=pressed_action,
+            )
             return
         if self.state == "GAME_OVER":
             self.draw_gameplay()
@@ -996,6 +1269,14 @@ class Game:
         pygame.draw.line(self.screen, (58, 55, 49), (rect.left + 10, rect.top + rect.height // 2), (rect.right - 10, rect.top + rect.height // 2), 4)
         pygame.draw.circle(self.screen, (145, 42, 32), rect.midtop, 7)
 
+    def draw_headshot_debug(self, enemy):
+        head_rect = enemy.get_head_rect().move(-self.camera_x, 0)
+        pygame.draw.rect(self.screen, (255, 220, 40), head_rect, 2)
+
+    def draw_headshot_indicators(self):
+        for indicator in self.headshot_indicators:
+            indicator.draw(self.screen, camera_x=self.camera_x)
+
     def draw_gameplay(self):
         self.draw_parallax_backgrounds()
 
@@ -1034,16 +1315,27 @@ class Game:
             if not self.is_world_rect_visible(enemy.rect):
                 continue
             enemy.draw(self.screen, camera_x=self.camera_x)
+            if DEBUG_HEADSHOTS:
+                self.draw_headshot_debug(enemy)
         for bullet in self.bullets:
             if not self.is_world_rect_visible(bullet.rect):
                 continue
             bullet.draw(self.screen, camera_x=self.camera_x)
+        self.draw_headshot_indicators()
 
         if DEBUG_PATHS:
             self.platform_graph.draw(self.screen, self.debug_font, self.level_manager.active_enemies, self.camera_x)
 
-        self.ui.draw_health_bar(self.screen, self.player)
-        self.ui.draw_level(self.screen, self.level_manager.current_level_number())
+        now = pygame.time.get_ticks() / 1000
+        self.ui.draw_hotbar(
+            self.screen,
+            self.player,
+            self.level_manager.current_level_number(),
+            len(LEVELS),
+            mouse_pos=self.last_mouse,
+            now=now,
+            menu_pressed_until=self.hotbar_menu_pressed_until,
+        )
         if self.show_fps_counter:
             self.ui.draw_fps_counter(self.screen, self.clock.get_fps())
 

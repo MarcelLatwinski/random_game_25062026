@@ -5,7 +5,8 @@ SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 FPS = 60
 SHOW_FPS_COUNTER = True
-DEBUG_AIM_PIVOT = True
+DEBUG_AIM_PIVOT = False
+DEBUG_HEADSHOTS = False
 MAX_FRAME_DT = 1 / 20
 
 PLAYER_MAX_HEALTH = 100
@@ -20,12 +21,12 @@ PLAYER_FIRE_COOLDOWN = 0.35
 PLAYER_BULLET_SPEED = 16
 BULLET_WIDTH = 32
 BULLET_HEIGHT = 12
+HEADSHOT_INDICATOR_MAX_SIZE = 72
 HURT_INVINCIBILITY = 0.5
 MAGAZINE_SIZE = 10
 STARTING_TOTAL_AMMO = 50
 STARTING_MAG_AMMO = 10
 STARTING_RESERVE_AMMO = 40
-MAX_RESERVE_AMMO = 60
 RELOAD_DURATION = 0.5
 RELOAD_PROMPT_DURATION = 1.0
 RELOAD_PROMPT_RISE = 42
@@ -183,7 +184,7 @@ DRAW_FLOOR_VISUAL = True
 # transparent/fake-transparent space above the concrete, so it is drawn this
 # many pixels above the collision line. If the player floats above the floor,
 # increase this value. If the player sinks into the floor, decrease it.
-FLOOR_SURFACE_OFFSET_Y = 204
+FLOOR_SURFACE_OFFSET_Y = 211
 
 # Spawn points wake up when they are this far ahead of the player.
 # The points themselves are world positions, so they do not move with the camera.
@@ -205,7 +206,7 @@ GROUND_EMERGENCE_DRAW_OFFSET_Y = 12
 AMMO_PICKUP_AMOUNT = 10
 HEALTH_PICKUP_AMOUNT = 25
 AMMO_DROP_CHANCE = 0.25
-HEALTH_DROP_CHANCE = 0.15
+HEALTH_DROP_CHANCE = 0.07
 
 # Pickup sprite source rectangles are adjustable because ammo_health_kit.png
 # stores both pickup sprites in one image with padding around the art.
@@ -621,6 +622,7 @@ UPGRADES = [
 IMAGE_PATHS = {
     "pickup_sheet": image_asset_path("ammo_health_kit"),
     "player_arms": image_asset_path("player_arms"),
+    "headshot": image_asset_path("headshot"),
 }
 
 PLAYER_BODY_SHEET_PATH = image_asset_path("new_player_sheet_noarms")
@@ -651,6 +653,7 @@ SPRITE_SHEETS = {
         "remove_light_background": needs_runtime_background_cleanup(PLAYER_BODY_SHEET_PATH),
         "background_min_value": 185,
         "background_channel_spread": 52,
+        "keep_largest_component_rows": (2,),
         "trim_transparent": False,
         "align": "bottom",
         "animations": {
