@@ -1,4 +1,5 @@
 import math
+from collections import OrderedDict
 
 import pygame
 import settings
@@ -23,7 +24,7 @@ UI_IMAGE_PATHS = {
 }
 
 # All rectangle constants are percentages of the image/screen they belong to.
-LOADING_TEXT_RECT = (0.274, 0.435, 0.452, 0.185)
+LOADING_TEXT_RECT = (0.255, 0.415, 0.490, 0.220)
 LOADING_BAR_RECT = (0.233, 0.703, 0.534, 0.026)
 LOADING_STATUS_RECT = (0.284, 0.778, 0.431, 0.080)
 LOADING_ELLIPSIS_INTERVAL = 0.40
@@ -41,40 +42,55 @@ HEALTH_BAR_WIDTH = 574
 HEALTH_BAR_HEIGHT = 38
 HEALTH_TEXT_X = HEALTH_BAR_X + HEALTH_BAR_WIDTH // 2
 HEALTH_TEXT_Y = HEALTH_BAR_Y + HEALTH_BAR_HEIGHT // 2
-AMMO_TEXT_X = 1224
+AMMO_TEXT_X = 1230
 AMMO_TEXT_Y = 75
-ROUND_TEXT_X = 1525
+ROUND_TEXT_X = 1540
 ROUND_TEXT_Y = 75
 AMMO_TEXT_WIDTH = 280
-AMMO_TEXT_HEIGHT = 48
+AMMO_TEXT_HEIGHT = 70
 ROUND_TEXT_WIDTH = 270
-ROUND_TEXT_HEIGHT = 48
+ROUND_TEXT_HEIGHT = 70
 MENU_BUTTON_X = 806
-MENU_BUTTON_Y = 32
+MENU_BUTTON_Y = 18
 MENU_BUTTON_WIDTH = 116
 MENU_BUTTON_HEIGHT = 112
+MENU_ICON_CENTER_X = MENU_BUTTON_X + MENU_BUTTON_WIDTH // 2
+MENU_ICON_CENTER_Y = 74
 
 PAUSE_MENU_HEIGHT_RATIO = 0.84
 PAUSE_MENU_ANIMATION_SECONDS = 0.18
-PAUSE_BUTTON_WIDTH_RATIO = 0.66
-PAUSE_BUTTON_HEIGHT_RATIO = 0.075
+PAUSE_SIDE_PANEL_GAP = 28
+PAUSE_SIDE_PANEL_WIDTH = 370
+PAUSE_SIDE_PANEL_MIN_WIDTH = 280
+PAUSE_SIDE_PANEL_MARGIN = 48
+# Relative to the trimmed escape_menu.png draw rect. This frames the large
+# empty stone tile beneath the baked-in "ESCAPE MENU" title.
+PAUSE_CONTENT_RECT = (0.135, 0.245, 0.730, 0.590)
+PAUSE_BUTTON_WIDTH_RATIO = 0.88
+PAUSE_BUTTON_HEIGHT_RATIO = 0.115
 PAUSE_BUTTON_LAYOUT = (
-    ("resume", 0.315),
-    ("fps", 0.425),
-    ("debug", 0.535),
-    ("main_menu", 0.645),
-    ("quit", 0.755),
+    ("resume", 0.180),
+    ("fps", 0.340),
+    ("debug", 0.500),
+    ("main_menu", 0.660),
+    ("quit", 0.820),
 )
 
 FONTS = {}
 _UI_FONT_NAME = None
 UI_FONT_CANDIDATES = (
-    "Bahnschrift Condensed",
-    "Arial Black",
-    "Segoe UI Black",
-    "DejaVu Sans Condensed",
+    "Roboto",
+    "Open Sans",
+    "DejaVu Sans",
     "Liberation Sans",
+    "Arial",
+    "Segoe UI",
 )
+
+UPGRADE_LOOKUP = {
+    upgrade["name"]: upgrade
+    for upgrade in settings.UPGRADES
+}
 
 
 def preferred_ui_font_name():
@@ -183,7 +199,7 @@ class UI:
         self.load_game_ui_assets(asset_manager)
 
     def prepare_fonts(self):
-        for size in (24, 28, 30, 34, 48, 54, 64, 72, 82, 104):
+        for size in (20, 22, 24, 28, 30, 34, 36, 40, 48, 54, 64, 72, 82, 104, 112):
             load_font("ui", size, bold=True)
         load_font("ui", 24, bold=False)
 
@@ -349,6 +365,10 @@ class UI:
             round(height * scale),
         )
 
+    def hotbar_design_point(self, surface, x, y):
+        scale = self.hotbar_scale(surface)
+        return (round(x * scale), round(y * scale))
+
     def hotbar_rect(self, surface):
         scale = self.hotbar_scale(surface)
         return pygame.Rect(
@@ -493,7 +513,9 @@ class UI:
             surface,
             ammo_text,
             ammo_rect,
-            size=round(31 * self.hotbar_scale(surface)),
+            size=round(40 * self.hotbar_scale(surface)),
+            color=(0, 0, 0),
+            outline=(0, 0, 0),
             antialias=False,
         )
 
@@ -503,7 +525,9 @@ class UI:
             surface,
             f"ROUND {level_number}",
             round_rect,
-            size=round(29 * self.hotbar_scale(surface)),
+            size=round(38 * self.hotbar_scale(surface)),
+            color=(0, 0, 0),
+            outline=(0, 0, 0),
             antialias=False,
         )
 
@@ -515,7 +539,7 @@ class UI:
         if pressed:
             pulse = 0.92
 
-        center = button_rect.center
+        center = self.hotbar_design_point(surface, MENU_ICON_CENTER_X, MENU_ICON_CENTER_Y)
         radius = round(min(button_rect.width, button_rect.height) * 0.28 * pulse)
         if hover or pressed:
             glow = pygame.Surface((radius * 2 + 18, radius * 2 + 18), pygame.SRCALPHA)
@@ -552,7 +576,7 @@ class UI:
         if not getattr(player, "picked_upgrades", None):
             return
 
-        upgrades = player.picked_upgrades[-5:]
+        upgrades = self.summarize_player_upgrades(player)[-5:]
         title_font = load_font("ui", 24, bold=True)
         item_font = load_font("ui", 21, bold=True)
         width = 340
@@ -563,9 +587,45 @@ class UI:
         pygame.draw.rect(panel_surface, (155, 177, 95, 120), panel_surface.get_rect(), 2, border_radius=6)
         surface.blit(panel_surface, panel)
         surface.blit(title_font.render("Upgrades", True, (238, 232, 195)), (panel.x + 12, panel.y + 9))
-        for index, upgrade_name in enumerate(upgrades):
-            text = item_font.render(upgrade_name, True, (218, 220, 188))
+        for index, upgrade in enumerate(upgrades):
+            text = item_font.render(f"{upgrade['name']} ({upgrade['count']})", True, (218, 220, 188))
             surface.blit(text, (panel.x + 14, panel.y + 42 + index * 30))
+
+    def normalize_upgrade_entry(self, upgrade_entry):
+        if isinstance(upgrade_entry, dict):
+            name = upgrade_entry.get("name", "")
+            description = upgrade_entry.get("description", "")
+        else:
+            name = str(upgrade_entry)
+            description = ""
+
+        lookup = UPGRADE_LOOKUP.get(name)
+        if lookup and not description:
+            description = lookup.get("description", "")
+
+        return {
+            "name": name,
+            "description": description,
+        }
+
+    def summarize_player_upgrades(self, player):
+        picked_upgrades = getattr(player, "picked_upgrades", None) or []
+        summarized = OrderedDict()
+        for upgrade_entry in picked_upgrades:
+            normalized = self.normalize_upgrade_entry(upgrade_entry)
+            name = normalized["name"]
+            if not name:
+                continue
+            if name not in summarized:
+                summarized[name] = {
+                    "name": name,
+                    "description": normalized["description"],
+                    "count": 0,
+                }
+            summarized[name]["count"] += 1
+            if not summarized[name]["description"] and normalized["description"]:
+                summarized[name]["description"] = normalized["description"]
+        return list(summarized.values())
 
     def draw_level(self, surface, level_number):
         self.draw_text(surface, f"Level {level_number}/{len(LEVELS)}", SCREEN_WIDTH - 360, 18, size=48, bold=True)
@@ -625,13 +685,15 @@ class UI:
         progress = clamp(progress, 0.0, 1.0)
 
         loading_text = f"LOADING{self.loading_ellipsis(now)}"
+        loading_size = fitted_font_size(loading_text, text_rect.width - 24, 112, min_size=72)
         self.draw_outlined_text(
             surface,
             loading_text,
             text_rect,
-            size=82,
-            color=(238, 232, 195),
-            outline=(18, 32, 20),
+            size=loading_size,
+            color=(25, 36, 27),
+            outline=(226, 226, 172),
+            antialias=False,
         )
 
         # Progress is based on completed loading tasks divided by the total
@@ -660,6 +722,7 @@ class UI:
             size=status_size,
             color=(220, 224, 187),
             outline=(12, 24, 16),
+            antialias=False,
         )
 
         if DEBUG_UI_RECTS:
@@ -670,7 +733,7 @@ class UI:
             ):
                 pygame.draw.rect(surface, color, rect, 2)
 
-    def pause_menu_rect(self, surface):
+    def pause_layout_rects(self, surface):
         if not self.escape_menu_image:
             width = 620
             height = 740
@@ -681,22 +744,48 @@ class UI:
 
         width = min(width, surface.get_width() - 120)
         height = min(height, surface.get_height() - 80)
-        return pygame.Rect(
+        top = (surface.get_height() - height) // 2
+        available_panel_width = surface.get_width() - width - PAUSE_SIDE_PANEL_GAP - PAUSE_SIDE_PANEL_MARGIN * 2
+        panel_width = min(PAUSE_SIDE_PANEL_WIDTH, available_panel_width)
+
+        if panel_width >= PAUSE_SIDE_PANEL_MIN_WIDTH:
+            total_width = width + PAUSE_SIDE_PANEL_GAP + panel_width
+            left = max(PAUSE_SIDE_PANEL_MARGIN, (surface.get_width() - total_width) // 2)
+            menu_rect = pygame.Rect(left, top, width, height)
+            panel_rect = pygame.Rect(menu_rect.right + PAUSE_SIDE_PANEL_GAP, top, panel_width, height)
+            return menu_rect, panel_rect
+
+        menu_rect = pygame.Rect(
             (surface.get_width() - width) // 2,
-            (surface.get_height() - height) // 2,
+            top,
             width,
             height,
         )
+        return menu_rect, None
+
+    def pause_menu_rect(self, surface):
+        menu_rect, _ = self.pause_layout_rects(surface)
+        return menu_rect
+
+    def pause_upgrade_panel_rect(self, surface):
+        _, panel_rect = self.pause_layout_rects(surface)
+        return panel_rect
+
+    def pause_content_rect(self, menu_rect):
+        return rect_from_percent(menu_rect, PAUSE_CONTENT_RECT)
 
     def pause_button_rects(self, surface, menu_rect=None):
         menu_rect = menu_rect or self.pause_menu_rect(surface)
+        content_rect = self.pause_content_rect(menu_rect)
         rects = []
-        width = round(menu_rect.width * PAUSE_BUTTON_WIDTH_RATIO)
-        height = round(menu_rect.height * PAUSE_BUTTON_HEIGHT_RATIO)
-        x = menu_rect.centerx - width // 2
+        width = round(content_rect.width * PAUSE_BUTTON_WIDTH_RATIO)
+        height = round(content_rect.height * PAUSE_BUTTON_HEIGHT_RATIO)
+        x = content_rect.centerx - width // 2
         for action, y_ratio in PAUSE_BUTTON_LAYOUT:
-            y = round(menu_rect.top + menu_rect.height * y_ratio)
-            rects.append((action, pygame.Rect(x, y, width, height)))
+            center_y = round(content_rect.top + content_rect.height * y_ratio)
+            rect = pygame.Rect(x, 0, width, height)
+            rect.centery = center_y
+            rects.append((action, rect))
         return rects
 
     def pause_menu_action_at(self, surface, mouse_pos):
@@ -704,6 +793,52 @@ class UI:
             if rect.collidepoint(mouse_pos):
                 return action
         return None
+
+    def pause_upgrade_panel_surface(self, size, player):
+        panel_surface = pygame.Surface(size, pygame.SRCALPHA)
+        panel_rect = panel_surface.get_rect()
+        pygame.draw.rect(panel_surface, (19, 24, 20, 232), panel_rect, border_radius=18)
+        pygame.draw.rect(panel_surface, (132, 154, 86, 210), panel_rect, 3, border_radius=18)
+
+        title_font = load_font("ui", 28, bold=True)
+        item_title_font = load_font("ui", 22, bold=True)
+        item_desc_font = load_font("ui", 17)
+        empty_font = load_font("ui", 19)
+
+        content_left = 22
+        content_right = size[0] - 22
+        y = 20
+
+        panel_surface.blit(
+            title_font.render("Chosen Upgrades", True, (238, 232, 195)),
+            (content_left, y),
+        )
+        y += 42
+        pygame.draw.line(panel_surface, (95, 112, 66), (content_left, y), (content_right, y), 2)
+        y += 14
+
+        upgrades = self.summarize_player_upgrades(player)
+        if not upgrades:
+            panel_surface.blit(
+                empty_font.render("No upgrades chosen yet.", True, (188, 194, 171)),
+                (content_left, y + 6),
+            )
+            return panel_surface
+
+        item_spacing = 12
+        description_gap = 6
+        for upgrade in upgrades:
+            title_text = f"{upgrade['name']} ({upgrade['count']})"
+            title_surface = item_title_font.render(title_text, True, (224, 228, 203))
+            desc_surface = item_desc_font.render(upgrade["description"], True, (186, 194, 169))
+            item_height = title_surface.get_height() + description_gap + desc_surface.get_height()
+            if y + item_height > size[1] - 20:
+                break
+            panel_surface.blit(title_surface, (content_left, y))
+            panel_surface.blit(desc_surface, (content_left, y + title_surface.get_height() + description_gap))
+            y += item_height + item_spacing
+
+        return panel_surface
 
     def pause_button_label(self, action, show_fps_counter=False):
         if action == "resume":
@@ -721,6 +856,7 @@ class UI:
     def draw_pause(
         self,
         surface,
+        player=None,
         show_fps_counter=False,
         mouse_pos=(0, 0),
         now=0.0,
@@ -729,6 +865,7 @@ class UI:
     ):
         self.draw_pause_menu(
             surface,
+            player=player,
             mouse_pos=mouse_pos,
             now=now,
             opened_at=opened_at,
@@ -739,6 +876,7 @@ class UI:
     def draw_pause_menu(
         self,
         surface,
+        player=None,
         mouse_pos=(0, 0),
         now=0.0,
         opened_at=0.0,
@@ -749,7 +887,7 @@ class UI:
         dim.fill((0, 0, 0, 128))
         surface.blit(dim, (0, 0))
 
-        final_rect = self.pause_menu_rect(surface)
+        final_rect, panel_final_rect = self.pause_layout_rects(surface)
         progress = smooth_progress((now - opened_at) / PAUSE_MENU_ANIMATION_SECONDS)
         scale = 0.90 + 0.10 * progress
         alpha = round(255 * progress)
@@ -759,6 +897,15 @@ class UI:
         )
         draw_rect = pygame.Rect(0, 0, *draw_size)
         draw_rect.center = final_rect.center
+
+        panel_draw_rect = None
+        if panel_final_rect:
+            panel_draw_size = (
+                max(1, round(panel_final_rect.width * scale)),
+                max(1, round(panel_final_rect.height * scale)),
+            )
+            panel_draw_rect = pygame.Rect(0, 0, *panel_draw_size)
+            panel_draw_rect.center = panel_final_rect.center
 
         menu = self.scaled_image("escape_menu", self.escape_menu_image, final_rect.size)
         if menu:
@@ -773,6 +920,13 @@ class UI:
             fallback.fill((92, 96, 77, alpha))
             pygame.draw.rect(fallback, (23, 29, 24, alpha), fallback.get_rect(), 4)
             surface.blit(fallback, draw_rect)
+
+        if panel_final_rect and panel_draw_rect:
+            panel_surface = self.pause_upgrade_panel_surface(panel_final_rect.size, player)
+            if panel_draw_rect.size != panel_final_rect.size:
+                panel_surface = pygame.transform.smoothscale(panel_surface, panel_draw_rect.size)
+            panel_surface.set_alpha(alpha)
+            surface.blit(panel_surface, panel_draw_rect)
 
         text_alpha = alpha
         for action, rect in self.pause_button_rects(surface, draw_rect):
@@ -802,18 +956,27 @@ class UI:
             text_color = (238, 232, 195)
             if action == "quit":
                 text_color = (232, 168, 142)
+            text_size = fitted_font_size(
+                label,
+                rect.width - 32,
+                max(28, round(rect.height * 0.58)),
+                min_size=20,
+            )
+            text_rect = rect
             self.draw_outlined_text(
                 surface,
                 label,
-                rect,
-                size=34,
+                text_rect,
+                size=text_size,
                 color=text_color,
                 outline=(18, 23, 19),
                 alpha=text_alpha,
+                antialias=False,
             )
 
         if DEBUG_UI_RECTS:
             pygame.draw.rect(surface, (255, 70, 70), final_rect, 2)
+            pygame.draw.rect(surface, (80, 160, 255), self.pause_content_rect(final_rect), 2)
             for _, rect in self.pause_button_rects(surface, final_rect):
                 pygame.draw.rect(surface, (120, 255, 120), rect, 2)
 

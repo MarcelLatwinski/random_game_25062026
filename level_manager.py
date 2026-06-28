@@ -149,12 +149,68 @@ class LevelManager:
     def build_spawn_points(self):
         spawn_points = []
         current_level_number = self.current_level_number()
+        enemy_progression = self.current_level.get("enemy_progression", {})
+        priority_section = self.current_level.get("priority_spawn_section")
+        allowed_types = enemy_progression.get("allowed_types")
+        if allowed_types is not None:
+            allowed_types = set(allowed_types)
 
+        max_total = enemy_progression.get("max_total")
+        if max_total is not None:
+            max_total = max(0, int(max_total))
+
+        filtered_templates = []
         templates = self.collect_section_items("enemy_spawns", fallback=ENEMY_SPAWN_POINTS)
         for template in templates:
             min_level = template.get("min_level", 1)
             if current_level_number < min_level:
                 continue
+
+            enemy_type = (
+                template.get("type")
+                or template.get("enemyType")
+                or template.get("enemy_type")
+            )
+            if allowed_types is not None and enemy_type not in allowed_types:
+                continue
+
+            filtered_templates.append(template)
+
+        scheduled_total = 0
+        reserved_template_index = None
+
+        if priority_section and max_total and max_total > 0:
+            for index, template in enumerate(filtered_templates):
+                if template.get("section") != priority_section:
+                    continue
+
+                reserved_template_index = index
+                reserved_template = dict(template)
+                reserved_template["amount"] = 1
+                spawn_points.append(self.build_spawn_point(reserved_template))
+                scheduled_total += 1
+                break
+
+        for index, template in enumerate(filtered_templates):
+            reserved_one = index == reserved_template_index
+
+            amount = max(1, int(template.get("amount", 1)))
+            if reserved_one:
+                amount -= 1
+
+            if amount <= 0:
+                continue
+
+            if max_total is not None:
+                remaining = max_total - scheduled_total
+                if remaining <= 0:
+                    break
+                if amount > remaining:
+                    template = dict(template)
+                    template["amount"] = remaining
+                    amount = remaining
+
+            scheduled_total += amount
 
             spawn_points.append(self.build_spawn_point(template))
 

@@ -70,6 +70,100 @@ def process_global_transparency(source_path, min_value, max_channel_spread):
     return image
 
 
+def transparent_neighbor_mask(alpha):
+    transparent = alpha == 0
+    neighbor = np.zeros_like(transparent, dtype=bool)
+
+    neighbor[1:, :] |= transparent[:-1, :]
+    neighbor[:-1, :] |= transparent[1:, :]
+    neighbor[:, 1:] |= transparent[:, :-1]
+    neighbor[:, :-1] |= transparent[:, 1:]
+    neighbor[1:, 1:] |= transparent[:-1, :-1]
+    neighbor[:-1, :-1] |= transparent[1:, 1:]
+    neighbor[1:, :-1] |= transparent[:-1, 1:]
+    neighbor[:-1, 1:] |= transparent[1:, :-1]
+    return neighbor
+
+
+def is_halo_color(color, min_value, max_channel_spread):
+    r, g, b = color[:3]
+    brightest = max(r, g, b)
+    darkest = min(r, g, b)
+    spread = brightest - darkest
+    return (
+        (darkest >= min_value - 18 and spread <= max_channel_spread + 24)
+        or (brightest >= min_value + 15 and darkest >= min_value - 55 and spread <= max_channel_spread + 55)
+    )
+
+
+def remove_light_halo_pixels(image, min_value, max_channel_spread, passes=1):
+    """Remove the white matte fringe left after fake-background transparency.
+
+    The source environment art is exported on a white/checkerboard background.
+    Once those background pixels are made transparent, a one-pixel pale outline
+    can remain where the artwork was anti-aliased against white. This pass only
+    removes light pixels that directly touch transparency, so interior highlights
+    and clouds in full background art are left alone.
+    """
+    if np is not None:
+        data = np.array(image)
+        rgb = data[:, :, :3].astype(np.int16)
+        brightest = rgb.max(axis=2)
+        darkest = rgb.min(axis=2)
+        spread = brightest - darkest
+
+        for _ in range(passes):
+            alpha = data[:, :, 3]
+            neighbor = transparent_neighbor_mask(alpha)
+            halo = (
+                (alpha > 0)
+                & neighbor
+                & (
+                    ((darkest >= min_value - 18) & (spread <= max_channel_spread + 24))
+                    | (
+                        (brightest >= min_value + 15)
+                        & (darkest >= min_value - 55)
+                        & (spread <= max_channel_spread + 55)
+                    )
+                )
+            )
+            if not halo.any():
+                break
+            data[halo, 3] = 0
+
+        return Image.fromarray(data, "RGBA")
+
+    pixels = image.load()
+    width, height = image.size
+
+    for _ in range(passes):
+        to_clear = []
+        for y in range(height):
+            for x in range(width):
+                color = pixels[x, y]
+                if not color[3] or not is_halo_color(color, min_value, max_channel_spread):
+                    continue
+
+                for nx in range(max(0, x - 1), min(width, x + 2)):
+                    for ny in range(max(0, y - 1), min(height, y + 2)):
+                        if nx == x and ny == y:
+                            continue
+                        if pixels[nx, ny][3] == 0:
+                            to_clear.append((x, y, color))
+                            break
+                    else:
+                        continue
+                    break
+
+        if not to_clear:
+            break
+
+        for x, y, color in to_clear:
+            pixels[x, y] = (color[0], color[1], color[2], 0)
+
+    return image
+
+
 def clean_rect_from_edges(image, rect, min_value, max_channel_spread):
     left, top, width, height = rect
     if width <= 0 or height <= 0:
@@ -328,6 +422,12 @@ def process_environment_assets():
             source_path,
             min_value=min_value,
             max_channel_spread=max_channel_spread,
+        )
+        image = remove_light_halo_pixels(
+            image,
+            min_value=min_value,
+            max_channel_spread=max_channel_spread,
+            passes=2 if is_cutout_or_floor else 1,
         )
         save_processed(image, source_path)
 

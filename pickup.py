@@ -1,4 +1,10 @@
+import math
+
 import pygame
+
+
+PICKUP_FLOAT_AMPLITUDE = 6
+PICKUP_FLOAT_SPEED = 2.8
 
 
 class Pickup:
@@ -9,9 +15,12 @@ class Pickup:
         self.rect = pygame.Rect(0, 0, width, height)
         self.rect.midbottom = (x, y)
         self.collected = False
+        self.float_age = (x * 0.013 + y * 0.017) % (math.pi * 2)
+        self.float_offset_y = 0
 
-    def update(self):
-        pass
+    def update(self, dt=0):
+        self.float_age += PICKUP_FLOAT_SPEED * dt
+        self.float_offset_y = round(math.sin(self.float_age) * PICKUP_FLOAT_AMPLITUDE)
 
     def check_collision_with_player(self, player):
         return self.rect.colliderect(player.rect)
@@ -27,6 +36,7 @@ class Pickup:
 
     def draw(self, surface, camera_x=0):
         draw_rect = self.rect.move(-camera_x, 0)
+        draw_rect.y += self.float_offset_y
         if self.image:
             surface.blit(self.image, draw_rect)
             return

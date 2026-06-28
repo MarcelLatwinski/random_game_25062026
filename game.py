@@ -382,7 +382,7 @@ class Game:
         ]
 
     def load_assets_with_progress(self):
-        self.prepare_start_loading_tasks(include_title_assets=True, load_all_animations=True)
+        self.prepare_start_loading_tasks(include_title_assets=True, load_all_animations=False)
 
     def prepare_start_loading_tasks(self, include_title_assets=False, load_all_animations=False):
         self.level_manager.start_level()
@@ -418,9 +418,12 @@ class Game:
         for key in animation_keys:
             self.add_loading_task(tasks, self.animation_loading_label(key), self.load_animation, key)
 
+        # Only prepare flipped frames if loading all animations
+        if load_all_animations:
+            self.add_loading_task(tasks, "Preparing flipped frames", self.prepare_flipped_animation_frames)
+
         self.add_loading_task(tasks, "Preparing backgrounds", self.prepare_parallax_cache)
         self.add_loading_task(tasks, "Preparing platform sprites", self.prepare_platform_surfaces)
-        self.add_loading_task(tasks, "Preparing flipped frames", self.prepare_flipped_animation_frames)
 
         self.loading_tasks = tasks
         self.loading_task_index = 0
@@ -762,7 +765,13 @@ class Game:
     def apply_upgrade_choice(self, choice_index):
         if 0 <= choice_index < len(self.upgrade_manager.current_choices):
             picked = self.upgrade_manager.current_choices[choice_index]
-            self.player.picked_upgrades.append(picked["name"])
+            self.player.picked_upgrades.append(
+                {
+                    "name": picked["name"],
+                    "description": picked.get("description", ""),
+                    "effect_id": picked.get("effect_id"),
+                }
+            )
         self.upgrade_manager.apply_upgrade(self.player, choice_index)
         if self.level_manager.next_level():
             self.request_next_level_loading()
@@ -823,7 +832,7 @@ class Game:
             self.update_bullets(dt)
             self.check_collisions(now)
             self.update_headshot_indicators(dt)
-            self.update_pickups()
+            self.update_pickups(dt)
             if self.player.health <= 0:
                 self.player.die()
                 self.state = "GAME_OVER"
@@ -938,13 +947,13 @@ class Game:
         )
         return closest_platform.top
 
-    def update_pickups(self):
+    def update_pickups(self, dt):
         for index in range(len(self.pickups) - 1, -1, -1):
             pickup = self.pickups[index]
             if not self.is_world_rect_visible(pickup.rect, margin=DRAW_MARGIN):
                 continue
 
-            pickup.update()
+            pickup.update(dt)
             if (
                 pickup.check_collision_with_player(self.player)
                 and pickup.collect(self.player)
@@ -1003,6 +1012,7 @@ class Game:
                 pressed_action = self.pause_pressed_action
             self.ui.draw_pause(
                 self.screen,
+                self.player,
                 self.show_fps_counter,
                 mouse_pos=self.last_mouse,
                 now=now,

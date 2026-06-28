@@ -4,7 +4,7 @@ from pathlib import Path
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 FPS = 60
-SHOW_FPS_COUNTER = True
+SHOW_FPS_COUNTER = False
 DEBUG_AIM_PIVOT = False
 DEBUG_HEADSHOTS = False
 MAX_FRAME_DT = 1 / 20
@@ -18,7 +18,7 @@ GRAVITY = 1.2
 MAX_FALL_SPEED = 30
 PLAYER_BASE_DAMAGE = 10
 PLAYER_FIRE_COOLDOWN = 0.35
-PLAYER_BULLET_SPEED = 16
+PLAYER_BULLET_SPEED = 32
 BULLET_WIDTH = 32
 BULLET_HEIGHT = 12
 HEADSHOT_INDICATOR_MAX_SIZE = 72
@@ -566,6 +566,54 @@ SKYSCRAPER_LEVEL = {
     "sections": LEVEL_SECTIONS,
 }
 
+# Early levels stay short and beginner-friendly, then add more map chunks.
+# Values represent how many sections from LEVEL_SECTIONS are included.
+LEVEL_SECTION_PROGRESSION = [3, 4, 5, 6, 7, 7, 7, 7, 7, 7]
+
+# Spawn pacing profile by level number.
+# - Level 1 starts with only 4 walkers.
+# - Tanks unlock on round 3.
+# - Flying zombies unlock on round 5.
+LEVEL_ENEMY_PROGRESSION = {
+    1: {"allowed_types": {"walker"}, "max_total": 4},
+    2: {"allowed_types": {"walker"}, "max_total": 6},
+    3: {"allowed_types": {"walker", "tank"}, "max_total": 8},
+    4: {"allowed_types": {"walker", "tank"}, "max_total": 10},
+    5: {"allowed_types": {"walker", "tank", "flying"}, "max_total": 12},
+}
+
+
+def build_level_for_number(number, section_count):
+    section_count = max(1, min(section_count, len(LEVEL_SECTIONS)))
+    selected_sections = LEVEL_SECTIONS[:section_count]
+    last_section_end = selected_sections[-1].get("end_x", LEVEL_WIDTH)
+    level_width = min(LEVEL_WIDTH, int(last_section_end + 220))
+    exit_x = max(320, level_width - 180)
+
+    level_data = dict(SKYSCRAPER_LEVEL)
+    level_data.update(
+        {
+            "number": number,
+            "width": level_width,
+            "sections": selected_sections,
+            # Keep at least one active spawn in the newest playable chunk so
+            # each map extension has combat pressure.
+            "priority_spawn_section": selected_sections[-1].get("name"),
+            "exit": {
+                "x": exit_x,
+                "y": EXIT_POSITION[1],
+                "width": EXIT_WIDTH,
+                "height": EXIT_HEIGHT,
+            },
+        }
+    )
+
+    enemy_progression = LEVEL_ENEMY_PROGRESSION.get(number)
+    if enemy_progression:
+        level_data["enemy_progression"] = enemy_progression
+
+    return level_data
+
 # Compatibility exports for older code paths. LevelManager now reads the
 # section data above, but these names remain useful for simple probes/tests.
 PLATFORMS = section_items("platforms")
@@ -573,12 +621,10 @@ ENEMY_SPAWN_POINTS = section_items("enemy_spawns")
 PICKUP_SPAWN_POINTS = section_items("pickups")
 DECORATIONS = section_items("decorations")
 
-# These entries keep the game level-based and define how many times the shared
-# map can be replayed before the final victory screen. Each level reuses the
-# same skyscraper layout for now, while enemy min_level values raise pressure.
+# Levels start short and easier, then gradually get longer and denser.
 LEVELS = [
-    dict(SKYSCRAPER_LEVEL, number=number)
-    for number in range(1, 11)
+    build_level_for_number(number, section_count)
+    for number, section_count in enumerate(LEVEL_SECTION_PROGRESSION, start=1)
 ]
 
 UPGRADES = [
