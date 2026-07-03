@@ -14,6 +14,7 @@ from settings import (
     IMAGE_PATHS,
     IMAGE_EXTENSIONS,
     PLATFORM_KEYS,
+    RANDOM_GAMEPLAY_ASSET_KEYS,
     SPRITE_SHEETS,
 )
 
@@ -21,6 +22,7 @@ from settings import (
 OUTPUT_DIR = Path("assets/images/processed")
 SOURCE_ENVIRONMENT_DIRS = (
     Path("assets/images/background_platforms"),
+    Path("assets/images/random_assets"),
     Path("assets/images"),
 )
 
@@ -68,6 +70,13 @@ def process_global_transparency(source_path, min_value, max_channel_spread):
                 pixels[x, y] = (color[0], color[1], color[2], 0)
 
     return image
+
+
+def trim_transparent_image(image):
+    bounds = image.getchannel("A").getbbox()
+    if not bounds:
+        return image
+    return image.crop(bounds)
 
 
 def transparent_neighbor_mask(alpha):
@@ -293,6 +302,7 @@ def nested_animation_source_config(sheet_config, animation_config):
         "remove_light_background",
         "background_min_value",
         "background_channel_spread",
+        "use_floor_grid",
     )
     source_config = {
         key: sheet_config[key]
@@ -310,6 +320,9 @@ def nested_animation_source_config(sheet_config, animation_config):
             "spacing": animation_sheet.get("spacing", 0),
         }
     )
+    for key in inherited_keys:
+        if key in animation_sheet:
+            source_config[key] = animation_sheet[key]
     if "frame_rects" in animation_sheet:
         source_config["frame_rects"] = animation_sheet["frame_rects"]
     return source_config
@@ -409,15 +422,17 @@ def process_environment_assets():
     cleanup_keys = set(BACKGROUND_CUTOUT_KEYS)
     cleanup_keys.add(FLOOR_ASSET_KEY)
     cleanup_keys.update(PLATFORM_KEYS)
+    cleanup_keys.update(RANDOM_GAMEPLAY_ASSET_KEYS)
 
     for key in sorted(cleanup_keys):
         source_path = source_environment_path(key)
         if not source_path:
             continue
 
+        is_random_gameplay_asset = key in RANDOM_GAMEPLAY_ASSET_KEYS
         is_cutout_or_floor = key in BACKGROUND_CUTOUT_KEYS or key == FLOOR_ASSET_KEY
-        min_value = 205 if is_cutout_or_floor else 225
-        max_channel_spread = 46 if is_cutout_or_floor else 36
+        min_value = 205 if (is_cutout_or_floor or is_random_gameplay_asset) else 225
+        max_channel_spread = 46 if (is_cutout_or_floor or is_random_gameplay_asset) else 36
         image = process_global_transparency(
             source_path,
             min_value=min_value,
@@ -429,6 +444,8 @@ def process_environment_assets():
             max_channel_spread=max_channel_spread,
             passes=2 if is_cutout_or_floor else 1,
         )
+        if is_random_gameplay_asset:
+            image = trim_transparent_image(image)
         save_processed(image, source_path)
 
 

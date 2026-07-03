@@ -18,9 +18,15 @@ class AssetManager:
         self.sounds = {}
         self._image_path_cache = {}
         self._sound_path_cache = {}
+        self._path_exists_cache = {}
 
     def _warn(self, message):
         print(f"[AssetManager] Warning: {message}")
+
+    def _path_exists(self, path):
+        if path not in self._path_exists_cache:
+            self._path_exists_cache[path] = os.path.exists(path)
+        return self._path_exists_cache[path]
 
     def load_image(
         self,
@@ -28,6 +34,7 @@ class AssetManager:
         path,
         remove_light_pixels=False,
         remove_light_pixels_from_edges=False,
+        remove_all_light_pixels=False,
         trim_transparent=False,
         transparent_min_value=225,
         transparent_channel_spread=36,
@@ -40,7 +47,7 @@ class AssetManager:
             self.images[key] = None
             return None
 
-        if not os.path.exists(path):
+        if not self._path_exists(path):
             self._warn(f"Missing image file for '{key}': {path}")
             self.images[key] = None
             return None
@@ -49,6 +56,7 @@ class AssetManager:
             path,
             remove_light_pixels,
             remove_light_pixels_from_edges,
+            remove_all_light_pixels,
             trim_transparent,
             transparent_min_value,
             transparent_channel_spread,
@@ -71,6 +79,12 @@ class AssetManager:
                     min_value=transparent_min_value,
                     max_channel_spread=transparent_channel_spread,
                 )
+                if remove_all_light_pixels:
+                    image = self._remove_near_white_pixels(
+                        image,
+                        min_value=transparent_min_value,
+                        max_channel_spread=transparent_channel_spread,
+                    )
             else:
                 image = self._remove_near_white_pixels(
                     image,
@@ -101,14 +115,14 @@ class AssetManager:
             self.animations[key] = None
             return None
 
-        if not os.path.exists(path):
+        if not self._path_exists(path):
             self._warn(f"Missing sprite sheet for animation '{key}': {path}")
             self.images[key] = None
             self.animations[key] = None
             return None
 
         for nested_path in self._nested_animation_sheet_paths(sheet_config):
-            if nested_path and not os.path.exists(nested_path):
+            if nested_path and not self._path_exists(nested_path):
                 self._warn(f"Missing nested sprite sheet for animation '{key}': {nested_path}")
 
         try:
@@ -135,7 +149,7 @@ class AssetManager:
             self.sounds[key] = None
             return None
 
-        if not os.path.exists(path):
+        if not self._path_exists(path):
             self._warn(f"Missing sound file for '{key}': {path}")
             self.sounds[key] = None
             return None

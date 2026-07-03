@@ -5,6 +5,13 @@ import pygame
 
 _FLIPPED_SURFACE_CACHE = {}
 _SHEET_FRAME_CACHE = {}
+_PATH_EXISTS_CACHE = {}
+
+
+def _path_exists(path):
+    if path not in _PATH_EXISTS_CACHE:
+        _PATH_EXISTS_CACHE[path] = os.path.exists(path)
+    return _PATH_EXISTS_CACHE[path]
 
 
 def flipped_surface(image):
@@ -122,7 +129,7 @@ class AnimatedSprite:
 
 def load_animation_set(sheet_config):
     path = sheet_config["path"]
-    if not os.path.exists(path):
+    if not _path_exists(path):
         return None
 
     frames_by_row = load_sheet_frames(sheet_config)
@@ -155,7 +162,7 @@ def load_animation_set(sheet_config):
 
 def load_sheet_frames(sheet_config):
     path = sheet_config["path"]
-    if not os.path.exists(path):
+    if not _path_exists(path):
         return None
 
     cache_key = (
@@ -218,6 +225,9 @@ def get_animation_source_config(sheet_config, animation_config):
             "scale": animation_sheet.get("scale", sheet_config.get("scale", 1)),
         }
     )
+    for key in inherited_keys:
+        if key in animation_sheet:
+            source_config[key] = animation_sheet[key]
     if "frame_rects" in animation_sheet:
         source_config["frame_rects"] = animation_sheet["frame_rects"]
     return source_config

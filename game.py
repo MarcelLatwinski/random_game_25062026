@@ -16,6 +16,7 @@ from settings import (
     DRAW_GROUND_PLATFORM_VISUAL,
     DRAW_FLOOR_VISUAL,
     DRAW_MARGIN,
+    CLOSE_FOREGROUND_NEAR_PARALLAX_BOOST,
     COLLISION_QUERY_MARGIN,
     BULLET_COLLISION_QUERY_MARGIN,
     IMAGE_PATHS,
@@ -24,6 +25,8 @@ from settings import (
     FLOOR_ASSET_KEY,
     FLOOR_SURFACE_OFFSET_Y,
     BACKGROUND_CUTOUT_KEYS,
+    CLOSE_FOREGROUND_ASSET_KEYS,
+    RANDOM_GAMEPLAY_ASSET_KEYS,
     is_preprocessed_image_path,
     SPRITE_SHEETS,
     ENEMY_TYPE_CONFIGS,
@@ -32,6 +35,7 @@ from settings import (
     HEALTH_PICKUP_AMOUNT,
     AMMO_DROP_CHANCE,
     HEALTH_DROP_CHANCE,
+    HEADSHOT_DAMAGE_MULTIPLIER,
     HEADSHOT_INDICATOR_MAX_SIZE,
     GROUND_Y,
     LEVELS,
@@ -40,7 +44,7 @@ from animation import flipped_surface
 from player import Player
 from level_manager import LevelManager
 from upgrade_manager import UpgradeManager
-from ui import UI
+from ui import UI, load_font
 from platforms import Platform
 from platform_nav import PlatformGraph, DEBUG_PATHS
 from pickup import Pickup
@@ -50,13 +54,27 @@ GAME_STATES = [
     "TITLE",
     "MAIN_MENU",
     "PLAYING",
+    "UPGRADE_TRANSITION_OUT",
     "UPGRADE_SELECT",
+    "UPGRADE_TRANSITION_IN",
     "PAUSED",
     "GAME_OVER",
     "VICTORY",
 ]
+UPGRADE_MENU_STATES = (
+    "UPGRADE_TRANSITION_OUT",
+    "UPGRADE_SELECT",
+    "UPGRADE_TRANSITION_IN",
+)
 
-LOADING_FINISH_DELAY = 0.35
+LOADING_FINISH_DELAY = 0.10
+EXIT_ARROW_WIDTH = 170
+EXIT_ARROW_HEIGHT = 82
+EXIT_SIGN_WIDTH = 210
+EXIT_SIGN_HEIGHT = 48
+GAME_SCREEN_SIZE = (SCREEN_WIDTH, SCREEN_HEIGHT)
+WINDOWED_FLAGS = pygame.DOUBLEBUF
+WINDOWED_FULLSCREEN_FLAGS = pygame.DOUBLEBUF | pygame.NOFRAME
 
 
 class HeadshotIndicator:
@@ -91,17 +109,21 @@ class Game:
     def __init__(self):
         pygame.display.init()
         pygame.font.init()
-        self.screen = pygame.display.set_mode(
-            (SCREEN_WIDTH, SCREEN_HEIGHT),
-            pygame.DOUBLEBUF,
-        )
-        pygame.display.set_caption("Zombie Platform Shooter")
+        self.windowed_fullscreen = False
+        self.display_surface = None
+        self.present_rect = pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.present_scale_surface = None
+        self.fullscreen_renderer = None
+        self.fullscreen_frame_texture = None
+        self.uses_hardware_presenter = False
+        self.apply_display_mode()
         self.clock = pygame.time.Clock()
         self.state = "LOADING"
         self.assets = AssetManager()
         self.images = self.assets.images
         self.scaled_background = None
         self.parallax_cache = {}
+        self.world_sprite_cache = {}
         self.loading_screen_drawn = False
         self.loading_tasks = []
         self.loading_task_index = 0
@@ -123,7 +145,7 @@ class Game:
         self.bullets = []
         self.pickups = []
         self.headshot_indicators = []
-        self.last_mouse = pygame.mouse.get_pos()
+        self.last_mouse = self.current_mouse_game_pos()
         self.camera_x = 0
         self.show_fps_counter = SHOW_FPS_COUNTER
         self.debug_font = pygame.font.SysFont(None, 20)
@@ -133,6 +155,159 @@ class Game:
         self.pause_pressed_until = 0.0
         self.cursor_is_hand = False
         self.load_assets_with_progress()
+
+    def desktop_size(self):
+        try:
+            desktop_sizes = pygame.display.get_desktop_sizes()
+        except pygame.error:
+            desktop_sizes = []
+
+        if desktop_sizes and desktop_sizes[0][0] > 0 and desktop_sizes[0][1] > 0:
+            return desktop_sizes[0]
+
+        info = pygame.display.Info()
+        return (
+            info.current_w if info.current_w > 0 else SCREEN_WIDTH,
+            info.current_h if info.current_h > 0 else SCREEN_HEIGHT,
+        )
+
+    def apply_display_mode(self):
+        self.fullscreen_renderer = None
+        self.fullscreen_frame_texture = None
+        self.uses_hardware_presenter = False
+        if self.windowed_fullscreen:
+            self.apply_windowed_fullscreen_mode()
+        else:
+            self.display_surface = pygame.display.set_mode(GAME_SCREEN_SIZE, WINDOWED_FLAGS)
+            self.screen = self.display_surface
+
+        pygame.display.set_caption("Zombie Platform Shooter")
+        self.update_present_rect()
+        self.present_scale_surface = None
+
+    def apply_windowed_fullscreen_mode(self):
+        desktop_size = self.desktop_size()
+        self.display_surface = pygame.display.set_mode(
+            desktop_size,
+            WINDOWED_FULLSCREEN_FLAGS,
+        )
+        self.screen = pygame.Surface(GAME_SCREEN_SIZE).convert()
+        self.move_window_to_desktop()
+        self.create_hardware_presenter()
+
+    def move_window_to_desktop(self):
+        try:
+            from pygame._sdl2.video import Window
+        except (ImportError, pygame.error):
+            return
+
+        try:
+            window = Window.from_display_module()
+            window.borderless = True
+            window.position = (0, 0)
+        except (AttributeError, pygame.error):
+            pass
+
+    def create_hardware_presenter(self):
+        try:
+            from pygame._sdl2.video import Renderer, Window
+
+            window = Window.from_display_module()
+            self.fullscreen_renderer = Renderer.from_window(window)
+            self.uses_hardware_presenter = True
+        except Exception as error:
+            self.fullscreen_renderer = None
+            self.uses_hardware_presenter = False
+            print(f"[Display] Hardware fullscreen presenter unavailable; using software scaling. {error}")
+
+    def update_present_rect(self):
+        if self.windowed_fullscreen:
+            self.present_rect = self.display_surface.get_rect()
+            return
+
+        window_rect = self.display_surface.get_rect()
+        scale = min(window_rect.width / SCREEN_WIDTH, window_rect.height / SCREEN_HEIGHT)
+        width = max(1, round(SCREEN_WIDTH * scale))
+        height = max(1, round(SCREEN_HEIGHT * scale))
+        self.present_rect = pygame.Rect(0, 0, width, height)
+        self.present_rect.center = window_rect.center
+
+    def toggle_windowed_fullscreen(self):
+        self.windowed_fullscreen = not self.windowed_fullscreen
+        self.apply_display_mode()
+        self.last_mouse = self.current_mouse_game_pos()
+        self.cursor_is_hand = None
+
+    def window_to_game_pos(self, pos, clamp=False):
+        x, y = pos
+        if not self.present_rect.collidepoint(x, y):
+            if not clamp:
+                return None
+            x = max(self.present_rect.left, min(x, self.present_rect.right - 1))
+            y = max(self.present_rect.top, min(y, self.present_rect.bottom - 1))
+
+        game_x = (x - self.present_rect.left) * SCREEN_WIDTH / self.present_rect.width
+        game_y = (y - self.present_rect.top) * SCREEN_HEIGHT / self.present_rect.height
+        return (
+            max(0, min(SCREEN_WIDTH - 1, int(game_x))),
+            max(0, min(SCREEN_HEIGHT - 1, int(game_y))),
+        )
+
+    def current_mouse_game_pos(self):
+        return self.window_to_game_pos(pygame.mouse.get_pos(), clamp=True)
+
+    def present(self):
+        if self.uses_hardware_presenter:
+            self.present_with_hardware()
+            return
+
+        if self.screen is self.display_surface:
+            pygame.display.flip()
+            return
+
+        if (
+            self.windowed_fullscreen
+            and self.present_rect.topleft == (0, 0)
+            and self.present_rect.size == self.display_surface.get_size()
+        ):
+            pygame.transform.scale(self.screen, self.present_rect.size, self.display_surface)
+            pygame.display.flip()
+            return
+
+        if self.present_rect.size == GAME_SCREEN_SIZE:
+            if self.present_rect.topleft != (0, 0):
+                self.display_surface.fill((0, 0, 0))
+            self.display_surface.blit(self.screen, self.present_rect)
+        else:
+            self.display_surface.fill((0, 0, 0))
+            if (
+                self.present_scale_surface is None
+                or self.present_scale_surface.get_size() != self.present_rect.size
+            ):
+                self.present_scale_surface = pygame.Surface(self.present_rect.size).convert()
+            pygame.transform.scale(self.screen, self.present_rect.size, self.present_scale_surface)
+            self.display_surface.blit(self.present_scale_surface, self.present_rect)
+
+        pygame.display.flip()
+
+    def present_with_hardware(self):
+        try:
+            from pygame._sdl2.video import Texture
+
+            self.fullscreen_frame_texture = Texture.from_surface(
+                self.fullscreen_renderer,
+                self.screen,
+            )
+            self.fullscreen_renderer.draw_color = (0, 0, 0, 255)
+            self.fullscreen_renderer.clear()
+            self.fullscreen_frame_texture.draw(dstrect=self.present_rect)
+            self.fullscreen_renderer.present()
+        except Exception as error:
+            print(f"[Display] Hardware fullscreen present failed; using software scaling. {error}")
+            self.fullscreen_renderer = None
+            self.fullscreen_frame_texture = None
+            self.uses_hardware_presenter = False
+            self.present()
 
     def load_level_layout(self):
         self.platforms = [
@@ -179,6 +354,7 @@ class Game:
         path,
         remove_light_pixels=False,
         remove_light_pixels_from_edges=False,
+        remove_all_light_pixels=False,
         trim_transparent=False,
         transparent_min_value=225,
         transparent_channel_spread=36,
@@ -188,6 +364,7 @@ class Game:
             path,
             remove_light_pixels=remove_light_pixels,
             remove_light_pixels_from_edges=remove_light_pixels_from_edges,
+            remove_all_light_pixels=remove_all_light_pixels,
             trim_transparent=trim_transparent,
             transparent_min_value=transparent_min_value,
             transparent_channel_spread=transparent_channel_spread,
@@ -202,16 +379,53 @@ class Game:
         is_platform_sprite = key in PLATFORM_KEYS
         is_floor_sprite = key == FLOOR_ASSET_KEY
         is_cutout_background = key in BACKGROUND_CUTOUT_KEYS
-        min_value = 205 if is_cutout_background or is_floor_sprite else 225
-        channel_spread = 46 if is_cutout_background or is_floor_sprite else 36
+        is_close_foreground = key in CLOSE_FOREGROUND_ASSET_KEYS
+        is_random_gameplay_asset = key in RANDOM_GAMEPLAY_ASSET_KEYS
+
+        needs_runtime_cleanup = not is_preprocessed
+
+        needs_stronger_matte_cleanup = (
+            is_cutout_background
+            or is_floor_sprite
+            or is_random_gameplay_asset
+        )
+        min_value = 205 if needs_stronger_matte_cleanup else 220
+        channel_spread = 46 if needs_stronger_matte_cleanup else 44
         return self.load_image(
             key,
             path,
             remove_light_pixels=(
-                not is_preprocessed
-                and (is_platform_sprite or is_cutout_background or is_floor_sprite)
+                needs_runtime_cleanup
+                and (
+                    is_platform_sprite
+                    or is_cutout_background
+                    or is_floor_sprite
+                    or is_close_foreground
+                    or is_random_gameplay_asset
+                )
             ),
-            trim_transparent=is_platform_sprite,
+            remove_light_pixels_from_edges=(
+                needs_runtime_cleanup
+                and (
+                    is_close_foreground
+                    or is_random_gameplay_asset
+                )
+            ),
+            remove_all_light_pixels=(
+                needs_runtime_cleanup
+                and (
+                    is_close_foreground
+                    or is_random_gameplay_asset
+                )
+            ),
+            trim_transparent=(
+                needs_runtime_cleanup
+                and (
+                    is_platform_sprite
+                    or is_close_foreground
+                    or is_random_gameplay_asset
+                )
+            ),
             transparent_min_value=min_value,
             transparent_channel_spread=channel_spread,
         )
@@ -229,11 +443,12 @@ class Game:
                 transparent_channel_spread=52,
             )
         if key == "headshot":
+            needs_cleanup = not is_preprocessed_image_path(path)
             image = self.load_image(
                 key,
                 path,
-                remove_light_pixels=True,
-                trim_transparent=True,
+                remove_light_pixels=needs_cleanup,
+                trim_transparent=needs_cleanup,
                 transparent_min_value=205,
                 transparent_channel_spread=46,
             )
@@ -270,11 +485,18 @@ class Game:
 
     def current_level_visual_asset_keys(self, section_names=None, section_limit=None):
         visual_keys = set()
+        section_filter = set(section_names) if section_names is not None else None
 
         for layer in self.level_manager.background_layers:
             image_key = layer.get("image")
             if image_key:
                 visual_keys.add(image_key)
+
+        # Generated props can change each time a level is reset, so preload the
+        # full pools once instead of discovering a missing sprite during Start.
+        for sprite_key in CLOSE_FOREGROUND_ASSET_KEYS + RANDOM_GAMEPLAY_ASSET_KEYS:
+            if ENVIRONMENT_IMAGE_PATHS.get(sprite_key):
+                visual_keys.add(sprite_key)
 
         if DRAW_FLOOR_VISUAL:
             visual_keys.add(FLOOR_ASSET_KEY)
@@ -299,6 +521,24 @@ class Game:
                 sprite_key = decoration.get("sprite")
                 if sprite_key:
                     visual_keys.add(sprite_key)
+
+        # Runtime-generated collidable obstacles and close foreground assets are
+        # not baked into section data, so include them explicitly.
+        for platform_data in self.level_manager.platforms:
+            if not isinstance(platform_data, dict):
+                continue
+            if section_filter is not None and platform_data.get("section") not in section_filter:
+                continue
+            sprite_key = platform_data.get("sprite")
+            if sprite_key:
+                visual_keys.add(sprite_key)
+
+        for foreground in self.level_manager.close_foreground_assets:
+            if section_filter is not None and foreground.get("section") not in section_filter:
+                continue
+            sprite_key = foreground.get("sprite")
+            if sprite_key:
+                visual_keys.add(sprite_key)
 
         return sorted(visual_keys)
 
@@ -395,8 +635,9 @@ class Game:
         if include_title_assets:
             self.add_loading_task(tasks, "Preparing fonts", self.ui.prepare_fonts)
             self.add_loading_task(tasks, "Loading title_screen.png", self.ui.load_title_asset, self.assets)
-            self.add_loading_task(tasks, "Loading new_hotbar.png", self.ui.load_hotbar_asset, self.assets)
+            self.add_loading_task(tasks, "Loading hotbar2.png", self.ui.load_hotbar_asset, self.assets)
             self.add_loading_task(tasks, "Loading escape_menu.png", self.ui.load_escape_menu_asset, self.assets)
+            self.add_loading_task(tasks, "Loading upgrade menu assets", self.ui.load_upgrade_menu_assets, self.assets)
 
         for key, path in IMAGE_PATHS.items():
             self.add_loading_task(tasks, self.image_loading_label(key, path), self.load_core_image, key, path)
@@ -423,6 +664,7 @@ class Game:
             self.add_loading_task(tasks, "Preparing flipped frames", self.prepare_flipped_animation_frames)
 
         self.add_loading_task(tasks, "Preparing backgrounds", self.prepare_parallax_cache)
+        self.add_loading_task(tasks, "Checking prop visuals", self.prune_invisible_random_asset_platforms)
         self.add_loading_task(tasks, "Preparing platform sprites", self.prepare_platform_surfaces)
 
         self.loading_tasks = tasks
@@ -464,6 +706,8 @@ class Game:
     def should_draw_platform_visual(self, platform):
         if not DRAW_PLATFORM_VISUALS:
             return False
+        if not platform.sprite_key:
+            return False
         if DRAW_GROUND_PLATFORM_VISUAL:
             return True
 
@@ -472,11 +716,27 @@ class Game:
         # backgrounds are the only large environment layer.
         return platform.rect.width < self.level_manager.level_width * 0.9
 
-    def request_start_game(self):
-        if self.assets_ready:
-            self.start_loaded_game()
+    def prune_invisible_random_asset_platforms(self):
+        kept_platform_data = []
+        removed_count = 0
+        for platform_data in self.level_manager.platforms:
+            if (
+                isinstance(platform_data, dict)
+                and platform_data.get("sprite") in RANDOM_GAMEPLAY_ASSET_KEYS
+                and not self.images.get(platform_data.get("sprite"))
+            ):
+                removed_count += 1
+                continue
+            kept_platform_data.append(platform_data)
+
+        if removed_count == 0:
             return
 
+        self.level_manager.platforms = kept_platform_data
+        self.load_level_layout()
+        print(f"[LevelManager] Removed {removed_count} invisible generated prop collider(s).")
+
+    def request_start_game(self):
         self.level_manager.reset()
         self.load_level_layout()
         self.loading_context = "new_game"
@@ -509,6 +769,7 @@ class Game:
 
     def finish_start_game(self):
         self.preloaded_sections = set()
+        self.ui.reset_upgrade_menu()
         self.player = self.create_player()
         self.bullets = []
         self.pickups = []
@@ -527,8 +788,11 @@ class Game:
     def start_loaded_game(self):
         self.level_manager.reset()
         self.load_level_layout()
+        self.load_current_level_visual_assets()
+        self.prune_invisible_random_asset_platforms()
         self.prepare_runtime_caches(section_names=self.current_level_section_names())
         self.preloaded_sections = set()
+        self.ui.reset_upgrade_menu()
         self.player = self.create_player()
         self.bullets = []
         self.pickups = []
@@ -604,6 +868,7 @@ class Game:
     def reset(self):
         self.level_manager.reset()
         self.load_level_layout()
+        self.ui.reset_upgrade_menu()
         self.player = self.create_player()
         self.bullets = []
         self.pickups = []
@@ -645,6 +910,8 @@ class Game:
             self.close_pause_menu()
         elif action == "fps":
             self.show_fps_counter = not self.show_fps_counter
+        elif action == "windowed_fullscreen":
+            self.toggle_windowed_fullscreen()
         elif action == "debug":
             import settings
             settings.DEBUG_AIM_PIVOT = not settings.DEBUG_AIM_PIVOT
@@ -662,6 +929,8 @@ class Game:
             wants_hand = self.ui.hotbar_menu_button_rect(self.screen).collidepoint(self.last_mouse)
         elif self.state == "PAUSED":
             wants_hand = self.ui.pause_menu_action_at(self.screen, self.last_mouse) is not None
+        elif self.state in UPGRADE_MENU_STATES:
+            wants_hand = self.ui.upgrade_menu_wants_cursor(self.last_mouse)
 
         if wants_hand == self.cursor_is_hand:
             return
@@ -689,7 +958,7 @@ class Game:
             self.update_cursor()
             self.update(dt, now)
             self.draw()
-            pygame.display.flip()
+            self.present()
         pygame.quit()
 
     def handle_events(self, now):
@@ -698,34 +967,58 @@ class Game:
                 pygame.quit()
                 raise SystemExit
             if event.type == pygame.MOUSEMOTION:
-                self.last_mouse = event.pos
+                self.last_mouse = self.window_to_game_pos(event.pos, clamp=True)
+            if event.type == pygame.MOUSEWHEEL:
+                if self.state == "PLAYING":
+                    self.player.cycle_weapon(event.y)
+                continue
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
+                if self.state == "PLAYING":
+                    self.player.cycle_weapon(1 if event.button == 5 else -1)
+                continue
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                self.last_mouse = event.pos
+                mouse_pos = self.window_to_game_pos(event.pos)
+                if mouse_pos is None:
+                    continue
+                self.last_mouse = mouse_pos
                 if self.is_title_state():
-                    if self.ui.start_button_rect(self.screen).collidepoint(event.pos):
+                    if self.ui.start_button_rect(self.screen).collidepoint(mouse_pos):
                         self.request_start_game()
                 elif self.state == "PLAYING":
-                    hotbar_action = self.ui.handle_hotbar_click(self.screen, event.pos)
+                    hotbar_action = self.ui.handle_hotbar_click(self.screen, mouse_pos)
                     if hotbar_action == "menu":
                         self.hotbar_menu_pressed_until = now + 0.12
                         self.open_pause_menu(now)
                         continue
+                    if hotbar_action == "toggle_weapon":
+                        self.player.cycle_weapon(1)
+                        continue
                     if hotbar_action == "hud":
+                        continue
+                    if hotbar_action in ("melee", "pistol"):
+                        self.player.select_weapon(hotbar_action)
                         continue
                     keys = pygame.key.get_pressed()
                     if self.player.run_input_active(keys):
                         continue
-                    bullet = self.player.shoot(self.screen_to_world(self.last_mouse), now)
-                    if bullet:
-                        self.bullets.append(bullet)
+                    world_mouse = self.screen_to_world(self.last_mouse)
+                    if self.player.is_melee_selected():
+                        self.player.start_melee_attack(world_mouse)
+                    else:
+                        bullet = self.player.shoot(world_mouse, now)
+                        if bullet:
+                            self.bullets.append(bullet)
                 elif self.state == "PAUSED":
-                    action = self.ui.pause_menu_action_at(self.screen, event.pos)
+                    action = self.ui.pause_menu_action_at(self.screen, mouse_pos)
                     self.handle_pause_action(action, now)
-                elif self.state == "UPGRADE_SELECT":
-                    self.handle_upgrade_click(event.pos)
+                elif self.state in UPGRADE_MENU_STATES:
+                    self.handle_upgrade_click(mouse_pos)
                 elif self.state in ["GAME_OVER", "VICTORY"]:
                     pass
             if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_F11:
+                    self.toggle_windowed_fullscreen()
+                    continue
                 if event.key == pygame.K_ESCAPE:
                     if self.state == "PLAYING":
                         self.open_pause_menu(now)
@@ -742,37 +1035,57 @@ class Game:
                     settings.DEBUG_AIM_PIVOT = not settings.DEBUG_AIM_PIVOT
                 if event.key == pygame.K_r:
                     if self.state == "PLAYING":
-                        self.player.reload(now)
+                        if self.player.is_pistol_selected():
+                            self.player.reload(now)
                     elif self.state in ["GAME_OVER", "VICTORY"]:
                         self.reset()
-                if self.state == "UPGRADE_SELECT" and event.key in [pygame.K_1, pygame.K_2, pygame.K_3]:
+                if self.state == "PLAYING" and event.key == pygame.K_1:
+                    self.player.select_weapon("melee")
+                    continue
+                if self.state == "PLAYING" and event.key == pygame.K_2:
+                    self.player.select_weapon("pistol")
+                    continue
+                if self.state in UPGRADE_MENU_STATES and event.key in [pygame.K_1, pygame.K_2, pygame.K_3]:
                     choice_index = event.key - pygame.K_1
-                    self.apply_upgrade_choice(choice_index)
+                    self.ui.select_upgrade_card(choice_index)
 
     def handle_upgrade_click(self, mouse_pos):
-        card_width = 440
-        card_height = 260
-        spacing = 60
-        total_width = len(self.upgrade_manager.current_choices) * card_width + (len(self.upgrade_manager.current_choices) - 1) * spacing
-        x_start = (SCREEN_WIDTH - total_width) // 2
-        y = 220
-        for index in range(len(self.upgrade_manager.current_choices)):
-            x = x_start + index * (card_width + spacing)
-            card_rect = pygame.Rect(x, y, card_width, card_height)
-            if card_rect.collidepoint(mouse_pos):
-                self.apply_upgrade_choice(index)
+        self.ui.handle_upgrade_menu_click(mouse_pos)
+
+    def begin_upgrade_menu(self):
+        self.upgrade_manager.pick_upgrades()
+        self.draw_gameplay()
+        gameplay_snapshot = self.screen.copy()
+        self.ui.open_upgrade_menu(self.upgrade_manager.current_choices, gameplay_snapshot)
+        self.state = "UPGRADE_TRANSITION_OUT"
+
+    def update_upgrade_menu(self, dt):
+        result = self.ui.update_upgrade_menu(self.screen, dt, self.last_mouse)
+        phase = self.ui.upgrade_menu.phase
+        if phase == "fade_out":
+            self.state = "UPGRADE_TRANSITION_OUT"
+        elif phase == "closing":
+            self.state = "UPGRADE_TRANSITION_IN"
+        elif phase != "closed":
+            self.state = "UPGRADE_SELECT"
+
+        if result is not None:
+            self.apply_upgrade_choice(result)
 
     def apply_upgrade_choice(self, choice_index):
-        if 0 <= choice_index < len(self.upgrade_manager.current_choices):
-            picked = self.upgrade_manager.current_choices[choice_index]
-            self.player.picked_upgrades.append(
-                {
-                    "name": picked["name"],
-                    "description": picked.get("description", ""),
-                    "effect_id": picked.get("effect_id"),
-                }
-            )
+        if not (0 <= choice_index < len(self.upgrade_manager.current_choices)):
+            return
+
+        picked = self.upgrade_manager.current_choices[choice_index]
+        self.player.picked_upgrades.append(
+            {
+                "name": picked["name"],
+                "description": picked.get("description", ""),
+                "effect_id": picked.get("effect_id"),
+            }
+        )
         self.upgrade_manager.apply_upgrade(self.player, choice_index)
+        self.ui.reset_upgrade_menu()
         if self.level_manager.next_level():
             self.request_next_level_loading()
         else:
@@ -812,6 +1125,9 @@ class Game:
         if self.state == "LOADING":
             self.update_loading_screen(now)
             return
+        if self.state in UPGRADE_MENU_STATES:
+            self.update_upgrade_menu(dt)
+            return
         if self.state == "GAME_OVER":
             self.player.update_death_animation(dt)
             return
@@ -829,6 +1145,7 @@ class Game:
                 self.platform_graph,
             )
             self.spawn_pickups_from_removed_enemies(removed_enemies)
+            self.update_melee_attack()
             self.update_bullets(dt)
             self.check_collisions(now)
             self.update_headshot_indicators(dt)
@@ -840,8 +1157,7 @@ class Game:
                 if self.level_manager.is_final_level():
                     self.state = "VICTORY"
                 else:
-                    self.upgrade_manager.pick_upgrades()
-                    self.state = "UPGRADE_SELECT"
+                    self.begin_upgrade_menu()
 
     def mark_sections_preloaded(self, section_names):
         for section_name in section_names:
@@ -861,6 +1177,37 @@ class Game:
             )
             if not bullet.update(bullet_platforms, dt, self.level_manager.level_width):
                 del self.bullets[index]
+
+    def update_melee_attack(self):
+        if not self.player.melee_impact_ready():
+            return
+
+        enemy = self.closest_melee_target()
+        if enemy:
+            enemy.take_damage(self.player.melee_damage)
+            self.spawn_headshot_indicator(enemy)
+        self.player.mark_melee_hit()
+
+    def closest_melee_target(self):
+        hit_rect = self.player.melee_hit_rect()
+        player_center_x = self.player.rect.centerx
+        candidates = []
+        for enemy in self.level_manager.active_enemies:
+            if getattr(enemy, "dead", False) or not enemy.is_active():
+                continue
+            enemy_center_x = enemy.rect.centerx
+            if self.player.facing_right and enemy_center_x <= player_center_x:
+                continue
+            if not self.player.facing_right and enemy_center_x >= player_center_x:
+                continue
+            if not hit_rect.colliderect(enemy.rect):
+                continue
+            distance = abs(enemy_center_x - player_center_x)
+            candidates.append((distance, enemy))
+
+        if not candidates:
+            return None
+        return min(candidates, key=lambda candidate: candidate[0])[1]
 
     def update_headshot_indicators(self, dt):
         for indicator in self.headshot_indicators[:]:
@@ -975,7 +1322,7 @@ class Game:
                 if enemy.rect.colliderect(bullet.rect):
                     damage = getattr(bullet, "damage", 1)
                     if enemy.get_head_rect().colliderect(bullet.rect):
-                        damage *= 2
+                        damage *= HEADSHOT_DAMAGE_MULTIPLIER
                         self.spawn_headshot_indicator(enemy)
                     enemy.take_damage(damage)
                     bullet.start_impact()
@@ -1013,7 +1360,8 @@ class Game:
             self.ui.draw_pause(
                 self.screen,
                 self.player,
-                self.show_fps_counter,
+                show_fps_counter=self.show_fps_counter,
+                windowed_fullscreen=self.windowed_fullscreen,
                 mouse_pos=self.last_mouse,
                 now=now,
                 opened_at=self.pause_menu_opened_at,
@@ -1028,8 +1376,8 @@ class Game:
             self.draw_gameplay()
             self.ui.draw_victory(self.screen)
             return
-        if self.state == "UPGRADE_SELECT":
-            self.ui.draw_upgrade_screen(self.screen, self.upgrade_manager.current_choices)
+        if self.state in UPGRADE_MENU_STATES:
+            self.ui.draw_upgrade_menu(self.screen)
             return
         if self.state == "PLAYING":
             self.draw_gameplay()
@@ -1287,6 +1635,41 @@ class Game:
         for indicator in self.headshot_indicators:
             indicator.draw(self.screen, camera_x=self.camera_x)
 
+    def scaled_world_sprite(self, sprite_key, image, size):
+        cache_key = (sprite_key, id(image), size[0], size[1])
+        cached = self.world_sprite_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        scaled = pygame.transform.scale(image, size)
+        self.world_sprite_cache[cache_key] = scaled
+        return scaled
+
+    def draw_close_foreground_assets(self):
+        for item in self.level_manager.close_foreground_assets:
+            image = self.images.get(item.get("sprite"))
+            if not image:
+                continue
+
+            parallax = item.get("parallax", 1.12)
+            camera_factor = 1.0 + max(0.0, parallax - 1.0) * CLOSE_FOREGROUND_NEAR_PARALLAX_BOOST
+            screen_x = round(item["x"] - self.camera_x * camera_factor)
+            draw_rect = pygame.Rect(
+                screen_x,
+                item["y"],
+                item["width"],
+                item["height"],
+            )
+            if draw_rect.right < -DRAW_MARGIN or draw_rect.left > SCREEN_WIDTH + DRAW_MARGIN:
+                continue
+
+            scaled = self.scaled_world_sprite(
+                item["sprite"],
+                image,
+                (draw_rect.width, draw_rect.height),
+            )
+            self.screen.blit(scaled, draw_rect)
+
     def draw_gameplay(self):
         self.draw_parallax_backgrounds()
 
@@ -1320,7 +1703,7 @@ class Game:
             if not self.is_world_rect_visible(pickup.rect):
                 continue
             pickup.draw(self.screen, camera_x=self.camera_x)
-        self.player.draw(self.screen, camera_x=self.camera_x)
+        self.player.draw(self.screen, camera_x=self.camera_x, mouse_pos=self.last_mouse)
         for enemy in self.level_manager.active_enemies:
             if not self.is_world_rect_visible(enemy.rect):
                 continue
@@ -1332,6 +1715,7 @@ class Game:
                 continue
             bullet.draw(self.screen, camera_x=self.camera_x)
         self.draw_headshot_indicators()
+        self.draw_close_foreground_assets()
 
         if DEBUG_PATHS:
             self.platform_graph.draw(self.screen, self.debug_font, self.level_manager.active_enemies, self.camera_x)
@@ -1355,5 +1739,82 @@ class Game:
             return
 
         exit_rect = exit_rect.move(-self.camera_x, 0)
-        pygame.draw.rect(self.screen, (80, 220, 120), exit_rect)
-        pygame.draw.rect(self.screen, COLOR_TEXT, exit_rect, 4)
+        arrow_rect = pygame.Rect(0, 0, EXIT_ARROW_WIDTH, EXIT_ARROW_HEIGHT)
+        arrow_rect.midbottom = (exit_rect.centerx, exit_rect.bottom - 18)
+
+        sign_rect = pygame.Rect(0, 0, EXIT_SIGN_WIDTH, EXIT_SIGN_HEIGHT)
+        sign_rect.midbottom = (arrow_rect.centerx, arrow_rect.top - 12)
+
+        self.draw_exit_sign(sign_rect)
+        self.draw_exit_arrow(arrow_rect)
+
+    def draw_exit_sign(self, rect):
+        shadow = rect.move(4, 5)
+        pygame.draw.rect(self.screen, (5, 9, 8), shadow, border_radius=4)
+        pygame.draw.rect(self.screen, (30, 43, 38), rect, border_radius=4)
+        pygame.draw.rect(self.screen, (116, 133, 95), rect, 3, border_radius=4)
+        pygame.draw.rect(self.screen, (173, 219, 91), rect.inflate(-18, -20), 2, border_radius=3)
+
+        post_color = (24, 30, 27)
+        for x in (rect.left + 36, rect.right - 40):
+            pygame.draw.rect(self.screen, post_color, (x, rect.bottom - 2, 8, 24))
+            pygame.draw.rect(self.screen, (97, 108, 82), (x, rect.bottom - 2, 8, 24), 1)
+
+        font = load_font("ui", 24, bold=True)
+        text = font.render("NEXT LEVEL", False, (226, 232, 186))
+        outline = font.render("NEXT LEVEL", False, (7, 12, 10))
+        text_rect = text.get_rect(center=rect.center)
+        for offset in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+            self.screen.blit(outline, text_rect.move(offset))
+        self.screen.blit(text, text_rect)
+
+    def draw_exit_arrow(self, rect):
+        left = rect.left
+        right = rect.right
+        top = rect.top
+        bottom = rect.bottom
+        center_y = rect.centery
+        head_left = rect.left + round(rect.width * 0.58)
+        body_top = center_y - round(rect.height * 0.22)
+        body_bottom = center_y + round(rect.height * 0.22)
+
+        arrow_points = [
+            (left, body_top),
+            (head_left, body_top),
+            (head_left, top),
+            (right, center_y),
+            (head_left, bottom),
+            (head_left, body_bottom),
+            (left, body_bottom),
+        ]
+        shadow_points = [(x + 5, y + 6) for x, y in arrow_points]
+        pygame.draw.polygon(self.screen, (4, 8, 7), shadow_points)
+        pygame.draw.polygon(self.screen, (33, 50, 44), arrow_points)
+        pygame.draw.polygon(self.screen, (130, 148, 103), arrow_points, 4)
+
+        stripe_area = pygame.Rect(
+            left + 14,
+            center_y - 13,
+            max(1, head_left - left - 26),
+            26,
+        )
+        pygame.draw.rect(self.screen, (25, 29, 26), stripe_area)
+        stripe_x = stripe_area.left - 18
+        while stripe_x < stripe_area.right:
+            stripe = [
+                (stripe_x, stripe_area.bottom),
+                (stripe_x + 18, stripe_area.bottom),
+                (stripe_x + 42, stripe_area.top),
+                (stripe_x + 24, stripe_area.top),
+            ]
+            pygame.draw.polygon(self.screen, (166, 126, 41), stripe)
+            stripe_x += 34
+        pygame.draw.rect(self.screen, (91, 103, 77), stripe_area, 2)
+
+        glow_points = [
+            (head_left + 12, center_y - 17),
+            (right - 24, center_y),
+            (head_left + 12, center_y + 17),
+        ]
+        pygame.draw.lines(self.screen, (157, 239, 91), False, glow_points, 6)
+        pygame.draw.lines(self.screen, (222, 244, 150), False, glow_points, 2)

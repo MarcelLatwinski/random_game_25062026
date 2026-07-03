@@ -1,4 +1,5 @@
 import pygame
+import random
 from settings import (
     LEVELS,
     LEVEL_WIDTH,
@@ -18,6 +19,22 @@ from settings import (
     ENEMY_SPEED_SCALE_PER_LEVEL,
     ENEMY_HEALTH_SCALE_PER_LEVEL,
     GROUND_Y,
+    CLOSE_FOREGROUND_ASSET_SPECS,
+    MAX_CLOSE_FOREGROUND_OBJECTS,
+    CLOSE_FOREGROUND_SPAWN_CHANCE,
+    CLOSE_FOREGROUND_MIN_SPACING,
+    CLOSE_FOREGROUND_VERTICAL_OVERSCAN,
+    RANDOM_GAMEPLAY_ASSET_SPECS,
+    MAX_RANDOM_GAMEPLAY_ASSETS_PER_LEVEL,
+    RANDOM_GAMEPLAY_ASSET_TARGET_RANGE,
+    MIN_FLOOR_RANDOM_ASSETS_PER_LEVEL,
+    RANDOM_GAMEPLAY_ASSET_MIN_SPACING,
+    RANDOM_GAMEPLAY_SURFACE_FILL_CHANCE,
+    RANDOM_GAMEPLAY_ASSET_EDGE_MARGIN,
+    RANDOM_GAMEPLAY_ASSET_SURFACE_SINK,
+    ENVIRONMENT_IMAGE_PATHS,
+    MIN_CLOSE_FOREGROUND_OBJECTS,
+    SCREEN_HEIGHT,
 )
 from enemy import WalkerZombie, TankZombie, FlyingZombie
 
@@ -35,9 +52,11 @@ class LevelManager:
         self.sections = []
         self.background_layers = []
         self.platforms = []
+        self.close_foreground_assets = []
         self.decorations = []
         self.pickup_spawn_points = []
         self.enemy_spawn_points = []
+        self._asset_size_cache = {}
         self.next_spawn_index = 0
         self.active_enemies = []
         self.start_level()
@@ -81,8 +100,434 @@ class LevelManager:
 
         # Spawn points reset every level, so each point can fire once again.
         self.enemy_spawn_points = self.build_spawn_points()
+
+        # Add randomly placed collidable traversal obstacles after base map,
+        # pickups, and spawns are defined so we can avoid important objects.
+        self.platforms.extend(self.build_random_gameplay_platforms())
+
+        # Very close decorative layer that renders above all world entities.
+        self.close_foreground_assets = self.build_close_foreground_assets()
+
         self.next_spawn_index = 0
         self.active_enemies = []
+
+    def section_name_for_x(self, world_x):
+        for section in self.sections:
+            if section.get("start_x", 0) <= world_x <= section.get("end_x", self.level_width):
+                return section.get("name")
+        return None
+
+    def supports_random_asset(self, platform_data, allow_upper):
+        rect = self.platform_rect_from_data(platform_data)
+        if rect.width <= RANDOM_GAMEPLAY_ASSET_EDGE_MARGIN * 2:
+            return False
+        is_ground = self.is_floor_platform_data(platform_data)
+        if is_ground:
+            return True
+        if not allow_upper:
+            return False
+        if isinstance(platform_data, dict) and not platform_data.get("drop_through", True):
+            return False
+        return True
+
+    def random_asset_surfaces(self, allow_upper):
+        surfaces = []
+        for platform_data in self.platforms:
+            if self.supports_random_asset(platform_data, allow_upper):
+                surfaces.append(platform_data)
+        return surfaces
+
+    def reserved_world_points(self):
+        points = [
+            pygame.math.Vector2(self.player_start[0], self.player_start[1]),
+            pygame.math.Vector2(self.exit_position[0], self.exit_position[1]),
+        ]
+        for pickup in self.pickup_spawn_points:
+            points.append(pygame.math.Vector2(pickup.get("x", 0), pickup.get("y", GROUND_Y)))
+        for spawn in self.enemy_spawn_points:
+            points.append(pygame.math.Vector2(spawn.get("x", 0), spawn.get("y", GROUND_Y)))
+        return points
+
+    def is_random_asset_placement_valid(
+        self,
+        rect,
+        occupied_rects,
+        placed_rects,
+        reserved_points,
+    ):
+        if rect.left < 0 or rect.right > self.level_width:
+            return False
+
+        for occupied in occupied_rects:
+            if rect.colliderect(occupied):
+                return False
+
+        for placed in placed_rects:
+            if rect.colliderect(placed):
+                return False
+            if abs(rect.centerx - placed.centerx) < RANDOM_GAMEPLAY_ASSET_MIN_SPACING:
+                return False
+
+        for point in reserved_points:
+            if rect.collidepoint(round(point.x), round(point.y)):
+                return False
+            if abs(rect.centerx - point.x) < max(120, rect.width // 2 + 30):
+                if abs(rect.bottom - point.y) < 120:
+                    return False
+
+        return True
+
+    def build_random_gameplay_platforms(self):
+        occupied_rects = [self.platform_rect_from_data(platform_data) for platform_data in self.platforms]
+        reserved_points = self.reserved_world_points()
+        placed_rects = []
+        platforms = []
+        placed_total = 0
+        floor_placed = 0
+        placed_by_type = {key: 0 for key in RANDOM_GAMEPLAY_ASSET_SPECS}
+
+        def asset_source_size(sprite_key):
+            if sprite_key in self._asset_size_cache:
+                return self._asset_size_cache[sprite_key]
+
+            path = ENVIRONMENT_IMAGE_PATHS.get(sprite_key)
+            if not path:
+                size = (96, 96)
+            else:
+                try:
+                    image = pygame.image.load(path)
+                    size = (max(1, image.get_width()), max(1, image.get_height()))
+                except (pygame.error, OSError):
+                    size = (96, 96)
+            self._asset_size_cache[sprite_key] = size
+            return size
+
+        def try_place_asset(sprite_key, spec, use_spawn_chance=True, require_floor=False):
+            nonlocal placed_total, floor_placed
+            if placed_total >= MAX_RANDOM_GAMEPLAY_ASSETS_PER_LEVEL:
+                return False
+            if not ENVIRONMENT_IMAGE_PATHS.get(sprite_key):
+                return False
+
+            surfaces = self.random_asset_surfaces(spec.get("allow_upper", True))
+            if require_floor:
+                surfaces = [
+                    surface_data for surface_data in surfaces
+                    if self.is_floor_platform_data(surface_data)
+                ]
+            if not surfaces:
+                return False
+
+            spawn_chance = float(spec.get("spawn_chance", 0.0))
+            source_w, source_h = asset_source_size(sprite_key)
+            if "draw_width_range" in spec:
+                draw_width = random.randint(*spec["draw_width_range"])
+                draw_height = max(42, int(round(draw_width * (source_h / source_w))))
+            else:
+                scale_min, scale_max = spec.get("draw_scale_range", (1.0, 1.0))
+                draw_scale = random.uniform(scale_min, scale_max)
+                draw_width = max(70, int(round(source_w * draw_scale)))
+                draw_height = max(54, int(round(source_h * draw_scale)))
+
+            shuffled_surfaces = list(surfaces)
+            random.shuffle(shuffled_surfaces)
+            for surface_data in shuffled_surfaces:
+                if use_spawn_chance and random.random() > RANDOM_GAMEPLAY_SURFACE_FILL_CHANCE:
+                    continue
+                if use_spawn_chance and random.random() > spawn_chance:
+                    continue
+
+                surface_rect = self.platform_rect_from_data(surface_data)
+                surface_is_floor = self.is_floor_platform_data(surface_data)
+                left = surface_rect.left + RANDOM_GAMEPLAY_ASSET_EDGE_MARGIN
+                right = surface_rect.right - RANDOM_GAMEPLAY_ASSET_EDGE_MARGIN - draw_width
+                if right <= left:
+                    continue
+
+                draw_left = random.randint(left, right)
+                draw_top = surface_rect.top - draw_height
+                collision_rects = self.random_asset_collision_rects(
+                    spec,
+                    draw_left,
+                    draw_top,
+                    draw_width,
+                    draw_height,
+                )
+                rect = self.union_rects(collision_rects)
+                if not self.is_random_asset_placement_valid(
+                    rect,
+                    occupied_rects,
+                    placed_rects,
+                    reserved_points,
+                ):
+                    continue
+
+                platforms.append(
+                    {
+                        "x": rect.x,
+                        "y": rect.y,
+                        "width": rect.width,
+                        "height": rect.height,
+                        "collision_rects": self.relative_rects(collision_rects, rect),
+                        "sprite": sprite_key,
+                        "visual_width": draw_width,
+                        "visual_height": draw_height,
+                        "visual_x_offset": draw_left - rect.left,
+                        "visual_bottom_offset": surface_rect.top - rect.bottom,
+                        # Bottom-align to the surface, then sink the art a few
+                        # pixels so it feels planted instead of hovering.
+                        "visual_y_offset": RANDOM_GAMEPLAY_ASSET_SURFACE_SINK,
+                        "align_visual_bottom": True,
+                        "collidable": True,
+                        "drop_through": False,
+                        "surface": "floor" if surface_is_floor else "platform",
+                        "section": self.section_name_for_x(rect.centerx),
+                    }
+                )
+                placed_rects.append(rect)
+                placed_total += 1
+                if surface_is_floor:
+                    floor_placed += 1
+                placed_by_type[sprite_key] = placed_by_type.get(sprite_key, 0) + 1
+                return True
+
+            return False
+
+        def try_place_random_asset(require_floor=False, allow_small_rubble=True):
+            candidates = []
+            for sprite_key, spec in RANDOM_GAMEPLAY_ASSET_SPECS.items():
+                max_count = max(0, int(spec.get("max_count", 0)))
+                if max_count == 0:
+                    continue
+                if placed_by_type.get(sprite_key, 0) >= max_count:
+                    continue
+                if not allow_small_rubble and sprite_key == "small_rubble":
+                    continue
+                candidates.append(sprite_key)
+
+            random.shuffle(candidates)
+            for sprite_key in candidates:
+                spec = RANDOM_GAMEPLAY_ASSET_SPECS[sprite_key]
+                if try_place_asset(sprite_key, spec, use_spawn_chance=False, require_floor=require_floor):
+                    return True
+            return False
+
+        target_min, target_max = RANDOM_GAMEPLAY_ASSET_TARGET_RANGE
+        target_total = random.randint(target_min, target_max)
+        target_total = max(0, min(target_total, MAX_RANDOM_GAMEPLAY_ASSETS_PER_LEVEL))
+        required_floor = min(MIN_FLOOR_RANDOM_ASSETS_PER_LEVEL, target_total)
+
+        # Place a couple of props on the main floor first so the level variation
+        # is not only on floating platforms.
+        for _ in range(max(1, required_floor * 8)):
+            if placed_total >= target_total or floor_placed >= required_floor:
+                break
+            try_place_random_asset(require_floor=True)
+
+        # Fill the remaining sparse prop budget by choosing asset types in a
+        # random order each attempt instead of always favoring the first spec.
+        for _ in range(max(1, target_total * 12)):
+            if placed_total >= target_total:
+                break
+            try_place_random_asset(require_floor=False)
+
+        if placed_total > 1 and placed_by_type.get("small_rubble", 0) == placed_total:
+            for _ in range(len(RANDOM_GAMEPLAY_ASSET_SPECS) * 4):
+                if placed_total >= MAX_RANDOM_GAMEPLAY_ASSETS_PER_LEVEL:
+                    break
+                if try_place_random_asset(require_floor=False, allow_small_rubble=False):
+                    break
+
+        return platforms
+
+    def random_asset_collision_rects(self, spec, draw_left, draw_top, draw_width, draw_height):
+        image_bounds = pygame.Rect(draw_left, draw_top, draw_width, draw_height)
+        collision_rects = []
+        for rect_spec in spec.get("collision_rects", ()):
+            if len(rect_spec) != 4:
+                continue
+            rx, ry, rw, rh = rect_spec
+            rect = pygame.Rect(
+                round(draw_left + draw_width * float(rx)),
+                round(draw_top + draw_height * float(ry)),
+                max(8, round(draw_width * float(rw))),
+                max(8, round(draw_height * float(rh))),
+            ).clip(image_bounds)
+            if rect.width >= 8 and rect.height >= 8:
+                collision_rects.append(rect)
+
+        if collision_rects:
+            return collision_rects
+
+        collider_width_ratio = float(spec.get("collider_width_ratio", 0.8))
+        collider_height_ratio = float(spec.get("collider_height_ratio", 0.7))
+        collider_width = max(54, int(round(draw_width * collider_width_ratio)))
+        collider_height = max(34, int(round(draw_height * collider_height_ratio)))
+        return [
+            pygame.Rect(
+                draw_left + (draw_width - collider_width) // 2,
+                draw_top + draw_height - collider_height,
+                collider_width,
+                collider_height,
+            )
+        ]
+
+    def union_rects(self, rects):
+        if not rects:
+            return pygame.Rect(0, 0, 1, 1)
+
+        union = rects[0].copy()
+        for rect in rects[1:]:
+            union.union_ip(rect)
+        return union
+
+    def relative_rects(self, rects, origin_rect):
+        return [
+            (
+                rect.left - origin_rect.left,
+                rect.top - origin_rect.top,
+                rect.width,
+                rect.height,
+            )
+            for rect in rects
+        ]
+
+    def can_place_close_foreground(self, x, used_x):
+        if abs(x - self.player_start[0]) < 260:
+            return False
+        if abs(x - self.exit_position[0]) < 260:
+            return False
+        for previous_x in used_x:
+            if abs(x - previous_x) < CLOSE_FOREGROUND_MIN_SPACING:
+                return False
+        return True
+
+    def build_close_foreground_assets(self):
+        if not self.sections:
+            return []
+
+        def asset_source_size(sprite_key):
+            if sprite_key in self._asset_size_cache:
+                return self._asset_size_cache[sprite_key]
+
+            path = ENVIRONMENT_IMAGE_PATHS.get(sprite_key)
+            if not path:
+                size = (320, SCREEN_HEIGHT)
+            else:
+                try:
+                    image = pygame.image.load(path)
+                    size = (max(1, image.get_width()), max(1, image.get_height()))
+                except (pygame.error, OSError):
+                    size = (320, SCREEN_HEIGHT)
+            self._asset_size_cache[sprite_key] = size
+            return size
+
+        placed = []
+        used_x = []
+        sprite_keys = [
+            key for key in CLOSE_FOREGROUND_ASSET_SPECS
+            if ENVIRONMENT_IMAGE_PATHS.get(key)
+        ]
+        if not sprite_keys:
+            return []
+        random.shuffle(sprite_keys)
+
+        for section in self.sections:
+            if len(placed) >= MAX_CLOSE_FOREGROUND_OBJECTS:
+                break
+            if random.random() > CLOSE_FOREGROUND_SPAWN_CHANCE:
+                continue
+
+            section_start = int(section.get("start_x", 0))
+            section_end = int(section.get("end_x", self.level_width))
+            if section_end - section_start < 200:
+                continue
+
+            sprite_key = sprite_keys[len(placed) % len(sprite_keys)]
+            spec = CLOSE_FOREGROUND_ASSET_SPECS[sprite_key]
+            source_w, source_h = asset_source_size(sprite_key)
+            if spec.get("full_screen_height"):
+                overscan = int(round(SCREEN_HEIGHT * CLOSE_FOREGROUND_VERTICAL_OVERSCAN))
+                height = SCREEN_HEIGHT + overscan * 2
+                width = int(round(source_w * (height / source_h)))
+                width = max(spec["width_range"][0], min(width, spec["width_range"][1]))
+            else:
+                height = random.randint(*spec["height_range"])
+                width = int(round(source_w * (height / source_h)))
+                width = max(spec["width_range"][0], min(width, spec["width_range"][1]))
+            left = section_start + 70
+            right = section_end - width - 70
+            if right <= left:
+                continue
+
+            x = random.randint(left, right)
+            if not self.can_place_close_foreground(x, used_x):
+                continue
+
+            if spec.get("full_screen_height"):
+                y = -int(round(SCREEN_HEIGHT * CLOSE_FOREGROUND_VERTICAL_OVERSCAN))
+            elif spec.get("kind") == "vine":
+                y = random.randint(-40, 120)
+            else:
+                y = GROUND_Y - height - random.randint(30, 90)
+
+            placed.append(
+                {
+                    "sprite": sprite_key,
+                    "x": x,
+                    "y": y,
+                    "width": width,
+                    "height": height,
+                    "parallax": random.uniform(*spec["parallax_range"]),
+                    "section": section.get("name"),
+                }
+            )
+            used_x.append(x)
+
+        # If randomness produced too few occluders, add a couple guaranteed
+        # placements near early/mid sections to keep depth visible.
+        if len(placed) < MIN_CLOSE_FOREGROUND_OBJECTS:
+            for section in self.sections[:3]:
+                if len(placed) >= MIN_CLOSE_FOREGROUND_OBJECTS:
+                    break
+
+                section_start = int(section.get("start_x", 0))
+                section_end = int(section.get("end_x", self.level_width))
+                sprite_key = sprite_keys[len(placed) % len(sprite_keys)]
+                spec = CLOSE_FOREGROUND_ASSET_SPECS[sprite_key]
+                source_w, source_h = asset_source_size(sprite_key)
+                if spec.get("full_screen_height"):
+                    overscan = int(round(SCREEN_HEIGHT * CLOSE_FOREGROUND_VERTICAL_OVERSCAN))
+                    height = SCREEN_HEIGHT + overscan * 2
+                    width = int(round(source_w * (height / source_h)))
+                    width = max(spec["width_range"][0], min(width, spec["width_range"][1]))
+                else:
+                    height = random.randint(*spec["height_range"])
+                    width = int(round(source_w * (height / source_h)))
+                    width = max(spec["width_range"][0], min(width, spec["width_range"][1]))
+                section_width = max(1, section_end - section_start)
+                x = section_start + int(section_width * 0.68)
+                if not self.can_place_close_foreground(x, used_x):
+                    continue
+
+                if spec.get("full_screen_height"):
+                    y = -int(round(SCREEN_HEIGHT * CLOSE_FOREGROUND_VERTICAL_OVERSCAN))
+                else:
+                    y = random.randint(-20, 90) if spec.get("kind") == "vine" else GROUND_Y - height - 52
+                placed.append(
+                    {
+                        "sprite": sprite_key,
+                        "x": x,
+                        "y": y,
+                        "width": width,
+                        "height": height,
+                        "parallax": random.uniform(*spec["parallax_range"]),
+                        "section": section.get("name"),
+                    }
+                )
+                used_x.append(x)
+
+        return placed
 
     def collect_section_items(self, key, fallback=None):
         if not self.sections:

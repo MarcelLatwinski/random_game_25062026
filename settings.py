@@ -13,14 +13,26 @@ PLAYER_MAX_HEALTH = 100
 PLAYER_START_HEALTH = 100
 PLAYER_SPEED = 8
 PLAYER_RUN_SPEED_MULTIPLIER = 1.5
-PLAYER_JUMP_STRENGTH = 30
-GRAVITY = 1.2
+BASE_GRAVITY = 1.2
+GRAVITY_MULTIPLIER = 1.35
+GRAVITY = BASE_GRAVITY * GRAVITY_MULTIPLIER
+
+
+def scaled_jump_strength(base_strength):
+    # Keep peak jump height roughly constant when gravity changes.
+    return base_strength * (GRAVITY_MULTIPLIER ** 0.5)
+
+
+PLAYER_JUMP_STRENGTH = scaled_jump_strength(30)
 MAX_FALL_SPEED = 30
 PLAYER_BASE_DAMAGE = 10
+HEADSHOT_DAMAGE_MULTIPLIER = 2
+MELEE_DAMAGE = PLAYER_BASE_DAMAGE * HEADSHOT_DAMAGE_MULTIPLIER
 PLAYER_FIRE_COOLDOWN = 0.35
 PLAYER_BULLET_SPEED = 32
 BULLET_WIDTH = 32
 BULLET_HEIGHT = 12
+MELEE_ANIMATION_SPEED = 16
 HEADSHOT_INDICATOR_MAX_SIZE = 72
 HURT_INVINCIBILITY = 0.5
 MAGAZINE_SIZE = 10
@@ -49,12 +61,13 @@ def scaled_tank_size(size):
 
 PLAYER_WIDTH = scaled_player_size(76)
 PLAYER_HEIGHT = scaled_player_size(76)
+MELEE_RANGE = PLAYER_WIDTH * 2
 
 WALKER_HP = 40
 WALKER_SPEED = 4.8
 WALKER_DAMAGE = 10
 WALKER_JUMP_INTERVAL = (1.4, 2.2)
-WALKER_JUMP_STRENGTH = 30
+WALKER_JUMP_STRENGTH = scaled_jump_strength(30)
 WALKER_WIDTH = scaled_character_size(76)
 WALKER_HEIGHT = scaled_character_size(76)
 
@@ -62,7 +75,7 @@ TANK_HP = 100
 TANK_SPEED = 2.6
 TANK_DAMAGE = 25
 TANK_JUMP_INTERVAL = (2.0, 3.0)
-TANK_JUMP_STRENGTH = 30
+TANK_JUMP_STRENGTH = scaled_jump_strength(30)
 TANK_WIDTH = scaled_tank_size(92)
 TANK_HEIGHT = scaled_tank_size(92)
 
@@ -96,6 +109,9 @@ EXIT_HEIGHT = 170
 ENVIRONMENT_ASSET_DIRS = (
     "assets/images/processed",
     "assets/images/background_platforms",
+    "assets/images/close_assets",
+    "assets/images/random_assets",
+    "assets/images/hotbar",
     "assets/images",
 )
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
@@ -114,6 +130,134 @@ PLATFORM_KEYS = (
 FLOOR_ASSET_KEY = "floor"
 PLATFORM_COLLIDER_HEIGHT = 36
 
+CLOSE_FOREGROUND_ASSET_KEYS = (
+    "vine1",
+    "vine2",
+    "tree",
+    "close_building",
+)
+RANDOM_GAMEPLAY_ASSET_KEYS = (
+    "small_rubble",
+    "big_rubble",
+    "broken_wall",
+    "exit_barricade",
+    "broken_pipe",
+)
+
+CLOSE_FOREGROUND_ASSET_SPECS = {
+    "vine1": {
+        "kind": "vine",
+        "width_range": (260, 420),
+        "height_range": (560, 860),
+        "parallax_range": (1.18, 1.30),
+        "full_screen_height": True,
+    },
+    "vine2": {
+        "kind": "vine",
+        "width_range": (260, 440),
+        "height_range": (400, 540),
+        "parallax_range": (1.26, 1.44),
+        "full_screen_height": True,
+    },
+    "tree": {
+        "kind": "ground",
+        "width_range": (320, 520),
+        "height_range": (520, 740),
+        "parallax_range": (1.28, 1.46),
+        "full_screen_height": True,
+    },
+    "close_building": {
+        "kind": "ground",
+        "width_range": (340, 560),
+        "height_range": (520, 760),
+        "parallax_range": (1.34, 1.56),
+        "full_screen_height": True,
+    },
+}
+
+MAX_CLOSE_FOREGROUND_OBJECTS = 6
+MIN_CLOSE_FOREGROUND_OBJECTS = 2
+CLOSE_FOREGROUND_SPAWN_CHANCE = 0.42
+CLOSE_FOREGROUND_MIN_SPACING = 1300
+CLOSE_FOREGROUND_NEAR_PARALLAX_BOOST = 1.45
+CLOSE_FOREGROUND_VERTICAL_OVERSCAN = 0.05
+
+RANDOM_GAMEPLAY_ASSET_SPECS = {
+    "small_rubble": {
+        "draw_width_range": (120, 190),
+        "collider_width_ratio": 0.78,
+        "collider_height_ratio": 0.78,
+        "collision_rects": (
+            (0.06, 0.48, 0.34, 0.34),
+            (0.34, 0.24, 0.30, 0.62),
+            (0.56, 0.38, 0.36, 0.44),
+        ),
+        "spawn_chance": 0.32,
+        "max_count": 3,
+        "allow_upper": True,
+    },
+    "exit_barricade": {
+        "draw_width_range": (170, 260),
+        "collider_width_ratio": 0.74,
+        "collider_height_ratio": 0.52,
+        "collision_rects": (
+            (0.03, 0.74, 0.92, 0.22),
+            (0.14, 0.42, 0.70, 0.34),
+            (0.14, 0.08, 0.12, 0.56),
+            (0.74, 0.08, 0.12, 0.56),
+        ),
+        "spawn_chance": 0.24,
+        "max_count": 2,
+        "allow_upper": True,
+    },
+    "broken_pipe": {
+        "draw_width_range": (150, 240),
+        "collider_width_ratio": 0.82,
+        "collider_height_ratio": 0.70,
+        "collision_rects": (
+            (0.22, 0.06, 0.56, 0.70),
+            (0.08, 0.72, 0.84, 0.20),
+        ),
+        "spawn_chance": 0.24,
+        "max_count": 2,
+        "allow_upper": True,
+    },
+    "big_rubble": {
+        "draw_width_range": (210, 320),
+        "collider_width_ratio": 0.84,
+        "collider_height_ratio": 0.76,
+        "collision_rects": (
+            (0.06, 0.72, 0.88, 0.20),
+            (0.20, 0.24, 0.34, 0.52),
+            (0.42, 0.06, 0.24, 0.36),
+            (0.54, 0.38, 0.32, 0.38),
+        ),
+        "spawn_chance": 0.24,
+        "max_count": 2,
+        "allow_upper": False,
+    },
+    "broken_wall": {
+        "draw_width_range": (200, 310),
+        "collider_width_ratio": 0.86,
+        "collider_height_ratio": 0.74,
+        "collision_rects": (
+            (0.12, 0.04, 0.20, 0.90),
+            (0.28, 0.18, 0.32, 0.76),
+            (0.58, 0.42, 0.28, 0.50),
+        ),
+        "spawn_chance": 0.18,
+        "max_count": 1,
+        "allow_upper": False,
+    },
+}
+
+MAX_RANDOM_GAMEPLAY_ASSETS_PER_LEVEL = 6
+RANDOM_GAMEPLAY_ASSET_TARGET_RANGE = (3, 5)
+MIN_FLOOR_RANDOM_ASSETS_PER_LEVEL = 2
+RANDOM_GAMEPLAY_ASSET_MIN_SPACING = 430
+RANDOM_GAMEPLAY_SURFACE_FILL_CHANCE = 0.30
+RANDOM_GAMEPLAY_ASSET_EDGE_MARGIN = 68
+RANDOM_GAMEPLAY_ASSET_SURFACE_SINK = 14
 
 def find_image_asset(asset_name):
     for directory in ENVIRONMENT_ASSET_DIRS:
@@ -146,7 +290,13 @@ def needs_runtime_background_cleanup(path):
 
 ENVIRONMENT_IMAGE_PATHS = {
     asset_name: find_image_asset(asset_name)
-    for asset_name in BACKGROUND_ASSET_KEYS + PLATFORM_KEYS + (FLOOR_ASSET_KEY,)
+    for asset_name in (
+        BACKGROUND_ASSET_KEYS
+        + PLATFORM_KEYS
+        + (FLOOR_ASSET_KEY,)
+        + CLOSE_FOREGROUND_ASSET_KEYS
+        + RANDOM_GAMEPLAY_ASSET_KEYS
+    )
 }
 
 
@@ -665,13 +815,20 @@ UPGRADES = [
     },
 ]
 
+PLAYER_BODY_SHEET_PATH = str(Path("assets/images/player/final_player_sheet.png"))
+if not Path(PLAYER_BODY_SHEET_PATH).exists():
+    PLAYER_BODY_SHEET_PATH = str(Path("assets/images/player/final_player_sheet.jpg"))
+
+PLAYER_ARMS_PATH = str(Path("assets/images/player/player_arms.png"))
+if not Path(PLAYER_ARMS_PATH).exists():
+    PLAYER_ARMS_PATH = image_asset_path("player_arms")
+
 IMAGE_PATHS = {
     "pickup_sheet": image_asset_path("ammo_health_kit"),
-    "player_arms": image_asset_path("player_arms"),
+    "player_arms": PLAYER_ARMS_PATH,
     "headshot": image_asset_path("headshot"),
 }
 
-PLAYER_BODY_SHEET_PATH = image_asset_path("new_player_sheet_noarms")
 WALKER_ZOMBIE_SHEET_PATH = image_asset_path("walker_zombie_sheet")
 WALKER_ZOMBIE_GROUND_SHEET_PATH = image_asset_path("walker_zombie_ground_sheet")
 TANK_ZOMBIE_SHEET_PATH = image_asset_path("tank_zombie_sheet")
@@ -688,10 +845,12 @@ SPRITE_SHEETS = {
     "player": {
         "path": PLAYER_BODY_SHEET_PATH,
         "columns": 4,
-        "rows": 4,
+        "rows": 7,
         "frame_width": None,
         "frame_height": None,
-        "use_floor_grid": True,
+        # Use proportional row slicing so non-divisible sheet heights do not
+        # leak neighboring rows into punch/death frames.
+        "use_floor_grid": False,
         "margin": 0,
         "spacing": 0,
         "scale": 1,
@@ -699,16 +858,22 @@ SPRITE_SHEETS = {
         "remove_light_background": needs_runtime_background_cleanup(PLAYER_BODY_SHEET_PATH),
         "background_min_value": 185,
         "background_channel_spread": 52,
-        "keep_largest_component_rows": (2,),
+        "keep_largest_component_rows": (4,),
         "trim_transparent": False,
         "align": "bottom",
         "animations": {
             "idle": {"row": 0, "frames": [0], "fps": 2, "loop": True},
-            "walk": {"row": 0, "frames": [1, 2, 3, 2], "fps": 8, "loop": True},
-            "run": {"row": 1, "frames": [0, 1, 2, 3], "fps": 12, "loop": True},
-            "jump": {"row": 2, "frames": [0, 1], "fps": 8, "loop": True},
-            "fall": {"row": 2, "frames": [2, 3], "fps": 8, "loop": True},
-            "death": {"row": 3, "frames": [0, 1, 2, 3], "fps": 8, "loop": False},
+            "idle_noarms": {"row": 1, "frames": [0], "fps": 2, "loop": True},
+            "walk": {"row": 1, "frames": [0, 1, 2, 3, 2, 1, 0], "fps": 8, "loop": True},
+            "walk_full": {"row": 0, "frames": [0, 1, 2, 3, 2, 1, 0], "fps": 8, "loop": True},
+            "walk_noarms": {"row": 1, "frames": [0, 1, 2, 3, 2, 1, 0], "fps": 8, "loop": True},
+            "run": {"row": 3, "frames": [0, 1, 2, 3, 2, 1, 0], "fps": 12, "loop": True},
+            "run_full": {"row": 2, "frames": [0, 1, 2, 3, 2, 1, 0], "fps": 12, "loop": True},
+            "run_noarms": {"row": 3, "frames": [0, 1, 2, 3, 2, 1, 0], "fps": 12, "loop": True},
+            "jump": {"row": 4, "frames": [0, 1, 2, 3, 2, 1, 0], "fps": 10, "loop": True},
+            "fall": {"row": 4, "frames": [2, 3, 2], "fps": 10, "loop": True},
+            "melee": {"row": 5, "frames": [0, 1, 2, 3, 2, 1, 0], "fps": MELEE_ANIMATION_SPEED, "loop": False},
+            "death": {"row": 6, "frames": [0, 1, 2, 3], "fps": 8, "loop": False},
         },
     },
     "walker_zombie": {

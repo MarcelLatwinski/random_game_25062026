@@ -239,10 +239,12 @@ class GroundZombie(Enemy):
 
     def find_platform(self, rect, platforms):
         for platform in platforms:
-            if rect.bottom <= platform.rect.top + 8 and rect.bottom >= platform.rect.top - 8:
+            for solid_rect in platform.solid_rects():
+                if rect.bottom > solid_rect.top + 8 or rect.bottom < solid_rect.top - 8:
+                    continue
                 overlaps_platform_top = (
-                    rect.right > platform.rect.left + 4
-                    and rect.left < platform.rect.right - 4
+                    rect.right > solid_rect.left + 4
+                    and rect.left < solid_rect.right - 4
                 )
                 if overlaps_platform_top:
                     return platform
@@ -456,9 +458,10 @@ class GroundZombie(Enemy):
         probe_x = self.rect.right + 4 if direction > 0 else self.rect.left - 4
         probe_y = self.rect.bottom + 5
         for platform in platforms:
-            if probe_x >= platform.rect.left and probe_x <= platform.rect.right:
-                if probe_y >= platform.rect.top and probe_y <= platform.rect.top + 12:
-                    return True
+            for solid_rect in platform.solid_rects():
+                if probe_x >= solid_rect.left and probe_x <= solid_rect.right:
+                    if probe_y >= solid_rect.top and probe_y <= solid_rect.top + 12:
+                        return True
         return False
 
     def should_drop_toward_player(self, player):
@@ -501,27 +504,31 @@ class GroundZombie(Enemy):
         for platform in platforms:
             if getattr(platform, "drop_through", True):
                 continue
-            if self.rect.colliderect(platform.rect):
+            for solid_rect in platform.solid_rects():
+                if not self.rect.colliderect(solid_rect):
+                    continue
                 if self.vx > 0:
-                    self.rect.right = platform.rect.left
+                    self.rect.right = solid_rect.left
                 elif self.vx < 0:
-                    self.rect.left = platform.rect.right
+                    self.rect.left = solid_rect.right
                 self.pos_x = float(self.rect.x)
 
     def collide_vertical(self, platforms):
         for platform in platforms:
-            if self.rect.colliderect(platform.rect):
+            for solid_rect in platform.solid_rects():
+                if not self.rect.colliderect(solid_rect):
+                    continue
                 if getattr(platform, "drop_through", True):
                     if self.vy <= 0:
                         continue
-                    if self.previous_rect.bottom > platform.rect.top + 2:
+                    if self.previous_rect.bottom > solid_rect.top + 2:
                         continue
                 if self.vy > 0:
-                    self.rect.bottom = platform.rect.top
+                    self.rect.bottom = solid_rect.top
                     self.vy = 0
                     self.on_ground = True
                 elif self.vy < 0:
-                    self.rect.top = platform.rect.bottom
+                    self.rect.top = solid_rect.bottom
                     self.vy = 0
                     self.handle_head_bonk(platform)
                 self.pos_y = float(self.rect.y)
@@ -549,8 +556,10 @@ class GroundZombie(Enemy):
 
         candidates = []
         for platform in platforms:
-            if player.rect.bottom <= platform.rect.top and player.rect.centerx >= platform.rect.left - 120 and player.rect.centerx <= platform.rect.right + 120:
-                candidates.append(platform)
+            for solid_rect in platform.solid_rects():
+                if player.rect.bottom <= solid_rect.top and player.rect.centerx >= solid_rect.left - 120 and player.rect.centerx <= solid_rect.right + 120:
+                    candidates.append(platform)
+                    break
 
         if candidates:
             return min(candidates, key=lambda p: p.rect.top)

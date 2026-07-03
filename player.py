@@ -15,6 +15,7 @@ from settings import (
     GRAVITY,
     MAX_FALL_SPEED,
     PLAYER_BASE_DAMAGE,
+    MELEE_DAMAGE,
     PLAYER_FIRE_COOLDOWN,
     PLAYER_BULLET_SPEED,
     PLAYER_MAX_HEALTH,
@@ -31,16 +32,21 @@ from settings import (
 )
 from bullet import Bullet
 
-AIM_ARM_STATES = ("idle", "walk")
 AIM_BODY_FRAME_INDICES = {
     "idle": (0,),
-    "walk": (1, 2, 3, 2),
-    "run": (4, 5, 6, 7),
-    "jump": (8, 9),
-    "fall": (10, 11),
-    "death": (12, 13, 14, 15),
+    "idle_noarms": (4,),
+    "walk": (4, 5, 6, 7, 6, 5, 4),
+    "walk_full": (0, 1, 2, 3, 2, 1, 0),
+    "walk_noarms": (4, 5, 6, 7, 6, 5, 4),
+    "run": (12, 13, 14, 15, 14, 13, 12),
+    "run_full": (8, 9, 10, 11, 10, 9, 8),
+    "run_noarms": (12, 13, 14, 15, 14, 13, 12),
+    "jump": (16, 17, 18, 19, 18, 17, 16),
+    "fall": (18, 19, 18),
+    "melee": (20, 21, 22, 23, 22, 21, 20),
+    "death": (24, 25, 26, 27),
 }
-AIM_BODY_FRAME_COUNT = 12
+AIM_BODY_FRAME_COUNT = 28
 DEFAULT_BODY_SHOULDER_RATIO = pygame.math.Vector2(0.44, 0.40)
 DEFAULT_ARM_PIVOT_RATIO = pygame.math.Vector2(0.08, 0.50)
 
@@ -209,12 +215,18 @@ ARM_PIVOT_RATIO = pygame.math.Vector2(
 
 # Visible arm width as a ratio of player width. The full arms image is not
 # cropped because ARM_PIVOT is calibrated in the original image space.
-ARM_DRAW_WIDTH_RATIO = 0.49
+ARM_DRAW_WIDTH_RATIO = 0.62
 
 # Muzzle position as ratio along the arm (for bullet spawn point)
 MUZZLE_DISTANCE_RATIO = 0.42
 DROP_THROUGH_CLEARANCE = 4
 DROP_THROUGH_MAX_TIME = 0.7
+WEAPON_MELEE = "melee"
+WEAPON_PISTOL = "pistol"
+WEAPON_MODES = (WEAPON_MELEE, WEAPON_PISTOL)
+MELEE_IMPACT_ANIMATION_INDEX = 3
+MELEE_RANGE_WIDTH_RATIO = 0.92
+MELEE_HITBOX_HEIGHT_RATIO = 0.58
 
 
 def rotate_around_pivot(image, angle_degrees, image_pivot, target_pivot):
@@ -288,7 +300,7 @@ class Player:
         self.flipped_arms_image = flipped_surface(self.arms_image) if self.arms_image else None
 
         # Calibrated shoulder positions on each body frame, scaled to the
-        # runtime player draw size. Frame numbers follow the 4x4 body sheet.
+        # runtime player draw size. Frame numbers follow the 7x4 body sheet.
         self.body_shoulder_offsets = {
             frame_index: pygame.math.Vector2(offset)
             for frame_index, offset in BODY_SHOULDER_OFFSETS.items()
@@ -309,6 +321,7 @@ class Player:
         self.health = PLAYER_START_HEALTH
         self.damage_multiplier = 1.0
         self.picked_upgrades = []
+        self.current_weapon = WEAPON_PISTOL
         self.facing_right = True
         self.fire_cooldown = PLAYER_FIRE_COOLDOWN
         self.bullet_speed = PLAYER_BULLET_SPEED
@@ -327,6 +340,10 @@ class Player:
         self.reload_until = 0
         self.reload_prompt_age = None
         self.reload_font = pygame.font.SysFont("Segoe UI", 28, bold=True)
+        self.is_melee_attacking = False
+        self.melee_frame_index = 0
+        self.melee_frame_timer = 0.0
+        self.melee_has_hit = False
         self.color = COLOR_PLAYER
         self.drop_requested = False
         self.drop_through_platform_id = None
@@ -375,12 +392,42 @@ class Player:
     def damage(self):
         return int(PLAYER_BASE_DAMAGE * self.damage_multiplier)
 
+    @property
+    def melee_damage(self):
+        return int(MELEE_DAMAGE * self.damage_multiplier)
+
+    def is_melee_selected(self):
+        return self.current_weapon == WEAPON_MELEE
+
+    def is_pistol_selected(self):
+        return self.current_weapon == WEAPON_PISTOL
+
+    def select_weapon(self, weapon):
+        if weapon not in WEAPON_MODES:
+            return False
+        self.current_weapon = weapon
+        if self.is_melee_selected():
+            self.reload_prompt_age = None
+        return True
+
+    def cycle_weapon(self, direction=1):
+        if direction == 0:
+            return self.current_weapon
+        current_index = WEAPON_MODES.index(self.current_weapon)
+        step = 1 if direction > 0 else -1
+        self.current_weapon = WEAPON_MODES[(current_index + step) % len(WEAPON_MODES)]
+        if self.is_melee_selected():
+            self.reload_prompt_age = None
+        return self.current_weapon
+
     def is_reloading(self, now):
         return now < self.reload_until
 
     def can_shoot(self, now):
         return (
             now >= self.next_fire
+            and self.is_pistol_selected()
+            and not self.is_melee_attacking
             and not self.is_reloading(now)
             and self.current_ammo_in_gun > 0
             and not self.is_running
@@ -389,6 +436,8 @@ class Player:
         )
 
     def shoot(self, target_pos, now):
+        if not self.is_pistol_selected():
+            return None
         if self.current_ammo_in_gun <= 0:
             self.show_reload_prompt()
             return None
@@ -410,6 +459,66 @@ class Player:
             image=self.bullet_image,
             animations=self.bullet_animations,
         )
+
+    def can_melee_attack(self):
+        return (
+            self.is_melee_selected()
+            and not self.is_melee_attacking
+            and not self.is_dying
+            and not self.dead
+            and self.animator is not None
+            and self.animator.has_state("melee")
+        )
+
+    def start_melee_attack(self, target_pos=None):
+        if not self.can_melee_attack():
+            return False
+
+        if target_pos is not None:
+            self.facing_right = target_pos[0] >= self.rect.centerx
+        self.is_melee_attacking = True
+        self.melee_has_hit = False
+        self.melee_frame_index = 0
+        self.melee_frame_timer = 0.0
+        self.animator.play_once("melee")
+        return True
+
+    def melee_impact_ready(self):
+        if not self.is_melee_attacking or self.melee_has_hit:
+            return False
+        if not self.animator or self.animator.current_state != "melee":
+            return False
+        animation = self.animator.current_animation()
+        if not animation:
+            return False
+        return animation.current_index >= MELEE_IMPACT_ANIMATION_INDEX
+
+    def mark_melee_hit(self):
+        self.melee_has_hit = True
+
+    def melee_hit_rect(self):
+        range_width = max(18, int(self.rect.width * MELEE_RANGE_WIDTH_RATIO))
+        hit_height = max(18, int(self.rect.height * MELEE_HITBOX_HEIGHT_RATIO))
+        left = self.rect.right if self.facing_right else self.rect.left - range_width
+        top = self.rect.centery - hit_height // 2
+        return pygame.Rect(
+            left,
+            top,
+            range_width,
+            hit_height,
+        )
+
+    def movement_state_prefix(self):
+        return "full" if self.is_melee_selected() else "noarms"
+
+    def idle_state_for_weapon(self):
+        return "idle" if self.is_melee_selected() else "idle_noarms"
+
+    def walk_state_for_weapon(self):
+        return f"walk_{self.movement_state_prefix()}"
+
+    def run_state_for_weapon(self):
+        return f"run_{self.movement_state_prefix()}"
 
     def aim_origin_and_direction(self, target_pos):
         target = pygame.math.Vector2(target_pos)
@@ -472,6 +581,8 @@ class Player:
         return offset
 
     def reload(self, now):
+        if not self.is_pistol_selected():
+            return False
         missing_ammo = self.magazine_size - self.current_ammo_in_gun
         if missing_ammo <= 0 or self.reserve_ammo <= 0:
             return False
@@ -534,6 +645,8 @@ class Player:
         self.health = 0
         self.is_running = False
         self.is_dying = True
+        self.is_melee_attacking = False
+        self.melee_has_hit = True
         self.vx = 0
         self.vy = 0
         if self.animator and self.animator.has_state("death"):
@@ -608,20 +721,39 @@ class Player:
         if not self.animator:
             return
 
+        if self.is_melee_attacking:
+            self.update_melee_animation(dt)
+            return
+
         if not self.animator.is_playing_once():
             if not self.on_ground:
-                if self.vy < 0:
-                    self.animator.play("jump")
-                else:
-                    self.animator.play("fall")
+                # Keep airborne animation on the dedicated jump row so all
+                # four jump/fall poses play in sequence while in air.
+                self.animator.play("jump")
             elif self.is_running and abs(self.vx) > 0:
-                self.animator.play("run")
+                self.animator.play(self.run_state_for_weapon())
             elif abs(self.vx) > 0:
-                self.animator.play("walk")
+                self.animator.play(self.walk_state_for_weapon())
             else:
-                self.animator.play("idle")
+                self.animator.play(self.idle_state_for_weapon())
 
         self.animator.update(dt)
+
+    def update_melee_animation(self, dt):
+        if not self.animator or not self.animator.has_state("melee"):
+            self.is_melee_attacking = False
+            return
+
+        if self.animator.current_state != "melee":
+            self.animator.play_once("melee")
+
+        self.animator.update(dt)
+        animation = self.animator.current_animation()
+        if animation:
+            self.melee_frame_index = animation.current_index
+            self.melee_frame_timer = animation.elapsed
+        if self.animator.is_finished():
+            self.is_melee_attacking = False
 
     def update_death_animation(self, dt):
         if self.dead:
@@ -640,32 +772,35 @@ class Player:
         for platform in platforms:
             if getattr(platform, "drop_through", True):
                 continue
-            if self.rect.colliderect(platform.rect):
+            for solid_rect in platform.solid_rects():
+                if not self.rect.colliderect(solid_rect):
+                    continue
                 if self.vx > 0:
-                    self.rect.right = platform.rect.left
+                    self.rect.right = solid_rect.left
                 elif self.vx < 0:
-                    self.rect.left = platform.rect.right
+                    self.rect.left = solid_rect.right
 
     def collide_vertical(self, platforms):
         for platform in platforms:
-            if not self.rect.colliderect(platform.rect):
-                continue
-
-            if getattr(platform, "drop_through", True):
-                if self.should_ignore_drop_through_platform(platform):
-                    continue
-                if self.vy <= 0:
-                    continue
-                if self.previous_rect.bottom > platform.rect.top + 2:
+            for solid_rect in platform.solid_rects():
+                if not self.rect.colliderect(solid_rect):
                     continue
 
-            if self.vy > 0:
-                self.rect.bottom = platform.rect.top
-                self.vy = 0
-                self.on_ground = True
-            elif self.vy < 0:
-                self.rect.top = platform.rect.bottom
-                self.vy = 0
+                if getattr(platform, "drop_through", True):
+                    if self.should_ignore_drop_through_platform(platform):
+                        continue
+                    if self.vy <= 0:
+                        continue
+                    if self.previous_rect.bottom > solid_rect.top + 2:
+                        continue
+
+                if self.vy > 0:
+                    self.rect.bottom = solid_rect.top
+                    self.vy = 0
+                    self.on_ground = True
+                elif self.vy < 0:
+                    self.rect.top = solid_rect.bottom
+                    self.vy = 0
 
     def start_drop_through(self, platforms):
         platform = self.platform_underfoot(platforms)
@@ -681,13 +816,14 @@ class Player:
         for platform in platforms:
             if not getattr(platform, "drop_through", True):
                 continue
-            if abs(self.rect.bottom - platform.rect.top) > 8:
-                continue
-            if self.rect.right <= platform.rect.left + 4:
-                continue
-            if self.rect.left >= platform.rect.right - 4:
-                continue
-            return platform
+            for solid_rect in platform.solid_rects():
+                if abs(self.rect.bottom - solid_rect.top) > 8:
+                    continue
+                if self.rect.right <= solid_rect.left + 4:
+                    continue
+                if self.rect.left >= solid_rect.right - 4:
+                    continue
+                return platform
         return None
 
     def should_ignore_drop_through_platform(self, platform):
@@ -702,7 +838,8 @@ class Player:
         for platform in platforms:
             if platform.id != self.drop_through_platform_id:
                 continue
-            if self.rect.top > platform.rect.bottom + DROP_THROUGH_CLEARANCE:
+            platform_bottom = max(rect.bottom for rect in platform.solid_rects())
+            if self.rect.top > platform_bottom + DROP_THROUGH_CLEARANCE:
                 self.drop_through_platform_id = None
                 self.drop_through_timer = 0.0
             return
@@ -711,12 +848,19 @@ class Player:
             self.drop_through_platform_id = None
 
     def should_draw_aim_arms(self):
-        if not self.arms_image or self.is_running or self.is_dying or self.dead:
+        if (
+            not self.arms_image
+            or not self.is_pistol_selected()
+            or self.is_melee_attacking
+            or self.is_dying
+            or self.dead
+        ):
             return False
-
-        if self.animator:
-            return self.animator.current_state in AIM_ARM_STATES
-        return self.on_ground
+        # The jump row includes built-in arms; hide gun overlay in air to avoid
+        # rendering two arm sets on top of each other.
+        if not self.on_ground:
+            return False
+        return True
 
     def aim_shoulder_screen(self, draw_rect):
         offset = self.shoulder_offset()
@@ -785,10 +929,11 @@ class Player:
         )
         surface.blit(rotated_image, rotated_rect)
 
-    def draw(self, surface, camera_x=0):
+    def draw(self, surface, camera_x=0, mouse_pos=None):
         draw_rect = self.rect.move(-camera_x, 0)
         draw_arms = self.should_draw_aim_arms()
-        mouse_pos = pygame.mouse.get_pos()
+        if mouse_pos is None:
+            mouse_pos = pygame.mouse.get_pos()
         if draw_arms:
             self.facing_right = mouse_pos[0] >= draw_rect.centerx
 
@@ -837,7 +982,7 @@ class Player:
                     print(f"  ARM_INFO: arm_image_size={arm_image.get_size()}, arm_pivot={arm_pivot}, should_be_at_shoulder={shoulder_point}")
 
     def draw_reload_prompt(self, surface, draw_rect):
-        if self.reload_prompt_age is None:
+        if self.reload_prompt_age is None or not self.is_pistol_selected():
             return
 
         progress = min(1.0, self.reload_prompt_age / RELOAD_PROMPT_DURATION)

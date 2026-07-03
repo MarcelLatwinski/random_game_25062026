@@ -17,10 +17,14 @@ from settings import (
 DEBUG_UI_RECTS = False
 
 UI_IMAGE_PATHS = {
-    "loading_screen": "assets/images/loading_screen.png",
-    "title_screen": "assets/images/title_screen.png",
-    "hotbar": "assets/images/new_hotbar.png",
-    "escape_menu": "assets/images/escape_menu.png",
+    "loading_screen": settings.image_asset_path("loading_screen"),
+    "title_screen": settings.image_asset_path("title_screen"),
+    "hotbar": settings.image_asset_path("hotbar2"),
+    "melee_icon": settings.image_asset_path("melee_icon"),
+    "pistol_icon": settings.image_asset_path("pistol_icon"),
+    "escape_menu": settings.image_asset_path("escape_menu"),
+    "upgrade_menu": settings.image_asset_path("upgrade_menu"),
+    "upgrade_card": settings.image_asset_path("upgrade_card"),
 }
 
 # All rectangle constants are percentages of the image/screen they belong to.
@@ -56,6 +60,10 @@ MENU_BUTTON_WIDTH = 116
 MENU_BUTTON_HEIGHT = 112
 MENU_ICON_CENTER_X = MENU_BUTTON_X + MENU_BUTTON_WIDTH // 2
 MENU_ICON_CENTER_Y = 74
+WEAPON_ICON_SIZE = 48
+WEAPON_ICON_Y = 74
+MELEE_ICON_X = 1028
+PISTOL_ICON_X = 1088
 
 PAUSE_MENU_HEIGHT_RATIO = 0.84
 PAUSE_MENU_ANIMATION_SECONDS = 0.18
@@ -69,12 +77,50 @@ PAUSE_CONTENT_RECT = (0.135, 0.245, 0.730, 0.590)
 PAUSE_BUTTON_WIDTH_RATIO = 0.88
 PAUSE_BUTTON_HEIGHT_RATIO = 0.115
 PAUSE_BUTTON_LAYOUT = (
-    ("resume", 0.180),
-    ("fps", 0.340),
-    ("debug", 0.500),
-    ("main_menu", 0.660),
-    ("quit", 0.820),
+    ("resume", 0.115),
+    ("windowed_fullscreen", 0.270),
+    ("fps", 0.425),
+    ("debug", 0.580),
+    ("main_menu", 0.735),
+    ("quit", 0.890),
 )
+
+DEBUG_UPGRADE_UI_RECTS = False
+UPGRADE_MENU_DESIGN_WIDTH = 1672
+UPGRADE_MENU_DESIGN_HEIGHT = 941
+UPGRADE_CARD_SLOTS = (
+    pygame.Rect(286, 310, 340, 449),
+    pygame.Rect(666, 310, 340, 449),
+    pygame.Rect(1046, 310, 340, 449),
+)
+UPGRADE_TRANSITION_OUT_SECONDS = 0.32
+UPGRADE_MENU_FADE_SECONDS = 0.26
+UPGRADE_CARD_FALL_DURATION = 0.58
+UPGRADE_CARD_STAGGER_SECONDS = 0.10
+UPGRADE_SELECT_ANIMATION_SECONDS = 0.46
+UPGRADE_CLOSE_FADE_SECONDS = 0.34
+UPGRADE_CARD_ICON_RECT = (0.245, 0.165, 0.510, 0.295)
+UPGRADE_CARD_TITLE_RECT = (0.115, 0.585, 0.770, 0.085)
+UPGRADE_CARD_DESCRIPTION_RECT = (0.130, 0.675, 0.740, 0.155)
+UPGRADE_CARD_STAT_RECT = (0.140, 0.850, 0.720, 0.060)
+UPGRADE_EFFECT_ICONS = {
+    "bigger_heart": "heart",
+    "stronger_bullets": "bullet",
+    "faster_trigger": "trigger",
+    "runners_boots": "boot",
+    "spring_legs": "spring",
+    "quick_rounds": "round",
+    "medkit": "medkit",
+}
+UPGRADE_EFFECT_LABELS = {
+    "bigger_heart": "+25 MAX HP",
+    "stronger_bullets": "DAMAGE x1.2",
+    "faster_trigger": "FASTER FIRE",
+    "runners_boots": "MOVE SPEED +10%",
+    "spring_legs": "JUMP +8%",
+    "quick_rounds": "BULLET SPEED +15%",
+    "medkit": "+50 HP",
+}
 
 FONTS = {}
 _UI_FONT_NAME = None
@@ -146,13 +192,509 @@ def fitted_font_size(text, max_width, max_size, min_size=18):
     return min_size
 
 
+def ease_out_back(value):
+    value = clamp(value, 0.0, 1.0)
+    c1 = 1.70158
+    c3 = c1 + 1.0
+    return 1.0 + c3 * pow(value - 1.0, 3) + c1 * pow(value - 1.0, 2)
+
+
+def lerp(start, end, amount):
+    return start + (end - start) * amount
+
+
+def wrap_text(text, font, max_width):
+    words = text.split()
+    if not words:
+        return []
+
+    lines = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if font.size(candidate)[0] <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def draw_outlined_surface_text(
+    surface,
+    text,
+    rect,
+    font,
+    color=(238, 232, 195),
+    outline=(13, 17, 15),
+    alpha=255,
+    center=True,
+):
+    text_surface = font.render(text, False, color)
+    outline_surface = font.render(text, False, outline)
+    if alpha < 255:
+        text_surface.set_alpha(alpha)
+        outline_surface.set_alpha(alpha)
+
+    if center:
+        text_rect = text_surface.get_rect(center=rect.center)
+    else:
+        text_rect = text_surface.get_rect(midleft=(rect.left, rect.centery))
+
+    for offset in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+        surface.blit(outline_surface, text_rect.move(offset))
+    surface.blit(text_surface, text_rect)
+
+
+class UpgradeCard:
+    def __init__(self, upgrade, target_rect, index):
+        self.upgrade = upgrade
+        self.target_rect = target_rect.copy()
+        self.index = index
+        self.delay = index * UPGRADE_CARD_STAGGER_SECONDS
+        self.age = 0.0
+        self.hovered = False
+        self.hover_scale = 1.0
+        self.hover_lift = 0.0
+        self.current_rect = self.start_rect()
+
+    def start_rect(self):
+        rect = self.target_rect.copy()
+        rect.y = -rect.height - 80 - self.index * 44
+        return rect
+
+    def fall_progress(self):
+        return clamp((self.age - self.delay) / UPGRADE_CARD_FALL_DURATION, 0.0, 1.0)
+
+    def is_settled(self):
+        return self.fall_progress() >= 1.0
+
+    def animated_base_rect(self):
+        progress = self.fall_progress()
+        eased = ease_out_back(progress)
+        rect = self.target_rect.copy()
+        rect.y = round(lerp(self.start_rect().y, self.target_rect.y, eased))
+        return rect
+
+    def display_rect(self):
+        base = self.current_rect.copy()
+        display = pygame.Rect(
+            0,
+            0,
+            max(1, round(base.width * self.hover_scale)),
+            max(1, round(base.height * self.hover_scale)),
+        )
+        display.center = (base.centerx, round(base.centery + self.hover_lift))
+        return display
+
+    def update(self, dt, mouse_pos, selected_index=None, selection_age=0.0):
+        self.age += dt
+        self.current_rect = self.animated_base_rect()
+
+        settled = self.is_settled()
+        display = self.display_rect()
+        self.hovered = settled and selected_index is None and display.collidepoint(mouse_pos)
+
+        target_scale = 1.0
+        target_lift = 0.0
+        if selected_index is None:
+            if self.hovered:
+                target_scale = 1.055
+                target_lift = -14.0
+        elif selected_index == self.index:
+            pulse = math.sin(selection_age * 28.0) * 0.018
+            target_scale = 1.080 + pulse
+            target_lift = -18.0
+        else:
+            target_scale = 0.955
+            target_lift = 10.0
+
+        blend = min(1.0, dt * 12.0)
+        self.hover_scale = lerp(self.hover_scale, target_scale, blend)
+        self.hover_lift = lerp(self.hover_lift, target_lift, blend)
+
+    def draw(self, surface, menu, menu_alpha=255, selected_index=None, selection_age=0.0):
+        display = self.display_rect()
+        alpha = menu_alpha
+        if selected_index is not None and selected_index != self.index:
+            fade = clamp(selection_age / UPGRADE_SELECT_ANIMATION_SECONDS, 0.0, 1.0)
+            alpha = round(alpha * (1.0 - fade * 0.72))
+
+        if self.hovered or selected_index == self.index:
+            glow = pygame.Surface(display.inflate(34, 34).size, pygame.SRCALPHA)
+            glow_alpha = 92 if self.hovered else 125
+            pygame.draw.rect(
+                glow,
+                (163, 238, 102, min(glow_alpha, alpha)),
+                glow.get_rect(),
+                width=5,
+                border_radius=9,
+            )
+            surface.blit(glow, glow.get_rect(center=display.center))
+
+        card = menu.scaled_card_surface(display.size)
+        if card:
+            card_to_draw = card.copy()
+            card_to_draw.set_alpha(alpha)
+            surface.blit(card_to_draw, display)
+        else:
+            fallback = pygame.Surface(display.size, pygame.SRCALPHA)
+            fallback.fill((24, 39, 33, alpha))
+            pygame.draw.rect(fallback, (168, 194, 115, alpha), fallback.get_rect(), 4, border_radius=7)
+            surface.blit(fallback, display)
+
+        self.draw_icon(surface, menu, display, alpha)
+        self.draw_text(surface, display, alpha)
+
+        if DEBUG_UPGRADE_UI_RECTS:
+            pygame.draw.rect(surface, (120, 255, 120), display, 2)
+            for spec, color in (
+                (UPGRADE_CARD_ICON_RECT, (255, 220, 80)),
+                (UPGRADE_CARD_TITLE_RECT, (255, 80, 80)),
+                (UPGRADE_CARD_DESCRIPTION_RECT, (90, 180, 255)),
+                (UPGRADE_CARD_STAT_RECT, (230, 90, 255)),
+            ):
+                pygame.draw.rect(surface, color, rect_from_percent(display, spec), 2)
+
+    def draw_icon(self, surface, menu, display, alpha):
+        effect_id = self.upgrade.get("effect_id", "")
+        icon_rect = rect_from_percent(display, UPGRADE_CARD_ICON_RECT)
+        icon_size = max(28, min(icon_rect.width, icon_rect.height))
+        icon = menu.icon_surface(effect_id, icon_size)
+        icon_to_draw = icon.copy()
+        icon_to_draw.set_alpha(alpha)
+        surface.blit(icon_to_draw, icon_to_draw.get_rect(center=icon_rect.center))
+
+    def draw_text(self, surface, display, alpha):
+        title = self.upgrade.get("name", "Upgrade")
+        description = self.upgrade.get("description", "")
+        effect_id = self.upgrade.get("effect_id", "")
+        stat = UPGRADE_EFFECT_LABELS.get(effect_id, "")
+
+        title_rect = rect_from_percent(display, UPGRADE_CARD_TITLE_RECT)
+        description_rect = rect_from_percent(display, UPGRADE_CARD_DESCRIPTION_RECT)
+        stat_rect = rect_from_percent(display, UPGRADE_CARD_STAT_RECT)
+
+        title_size = fitted_font_size(title.upper(), title_rect.width - 8, max(22, round(display.height * 0.066)), min_size=16)
+        title_font = load_font("ui", title_size, bold=True)
+        draw_outlined_surface_text(
+            surface,
+            title.upper(),
+            title_rect,
+            title_font,
+            color=(226, 232, 186),
+            outline=(7, 12, 10),
+            alpha=alpha,
+        )
+
+        desc_size = fitted_font_size(description, description_rect.width - 8, max(16, round(display.height * 0.046)), min_size=12)
+        desc_font = load_font("ui", desc_size, bold=True)
+        lines = wrap_text(description, desc_font, description_rect.width - 8)
+        line_height = max(desc_font.get_linesize() - 2, desc_font.get_height())
+        total_height = min(len(lines), 3) * line_height
+        y = description_rect.centery - total_height // 2
+        for line in lines[:3]:
+            line_rect = pygame.Rect(description_rect.left, y, description_rect.width, line_height)
+            draw_outlined_surface_text(
+                surface,
+                line,
+                line_rect,
+                desc_font,
+                color=(211, 219, 183),
+                outline=(7, 12, 10),
+                alpha=alpha,
+            )
+            y += line_height
+
+        if stat:
+            stat_size = fitted_font_size(stat, stat_rect.width - 8, max(15, round(display.height * 0.038)), min_size=11)
+            stat_font = load_font("ui", stat_size, bold=True)
+            draw_outlined_surface_text(
+                surface,
+                stat,
+                stat_rect,
+                stat_font,
+                color=(145, 234, 93),
+                outline=(6, 18, 8),
+                alpha=alpha,
+            )
+
+
+class UpgradeMenu:
+    def __init__(self):
+        self.background_image = None
+        self.card_image = None
+        self.scaled_cache = {}
+        self.icon_cache = {}
+        self.choices = []
+        self.cards = []
+        self.phase = "closed"
+        self.phase_age = 0.0
+        self.selection_age = 0.0
+        self.selected_index = None
+        self.finished_index = None
+        self.gameplay_snapshot = None
+        self.last_surface_size = None
+
+    def set_assets(self, background_image=None, card_image=None):
+        if background_image is not None:
+            self.background_image = background_image
+        if card_image is not None:
+            self.card_image = card_image
+        self.scaled_cache.clear()
+
+    def open(self, choices, gameplay_snapshot=None):
+        self.choices = list(choices)
+        self.cards = []
+        self.phase = "fade_out"
+        self.phase_age = 0.0
+        self.selection_age = 0.0
+        self.selected_index = None
+        self.finished_index = None
+        self.gameplay_snapshot = gameplay_snapshot.copy() if gameplay_snapshot else None
+        self.last_surface_size = None
+
+    def reset(self):
+        self.choices = []
+        self.cards = []
+        self.phase = "closed"
+        self.phase_age = 0.0
+        self.selection_age = 0.0
+        self.selected_index = None
+        self.finished_index = None
+        self.gameplay_snapshot = None
+        self.last_surface_size = None
+
+    def is_open(self):
+        return self.phase != "closed"
+
+    def is_interactive(self):
+        return self.phase == "menu" and self.selected_index is None and all(card.is_settled() for card in self.cards)
+
+    def menu_rect(self, surface):
+        surface_rect = surface.get_rect()
+        scale = min(
+            surface_rect.width / UPGRADE_MENU_DESIGN_WIDTH,
+            surface_rect.height / UPGRADE_MENU_DESIGN_HEIGHT,
+        )
+        width = round(UPGRADE_MENU_DESIGN_WIDTH * scale)
+        height = round(UPGRADE_MENU_DESIGN_HEIGHT * scale)
+        rect = pygame.Rect(0, 0, width, height)
+        rect.center = surface_rect.center
+        return rect
+
+    def design_rect_to_screen(self, surface, design_rect):
+        menu_rect = self.menu_rect(surface)
+        scale = menu_rect.width / UPGRADE_MENU_DESIGN_WIDTH
+        return pygame.Rect(
+            round(menu_rect.left + design_rect.x * scale),
+            round(menu_rect.top + design_rect.y * scale),
+            round(design_rect.width * scale),
+            round(design_rect.height * scale),
+        )
+
+    def ensure_cards(self, surface):
+        surface_size = surface.get_size()
+        if self.cards and self.last_surface_size == surface_size:
+            return
+
+        self.last_surface_size = surface_size
+        self.cards = [
+            UpgradeCard(upgrade, self.design_rect_to_screen(surface, UPGRADE_CARD_SLOTS[index]), index)
+            for index, upgrade in enumerate(self.choices[: len(UPGRADE_CARD_SLOTS)])
+        ]
+
+    def scaled_menu_surface(self, size):
+        if not self.background_image:
+            return None
+        key = ("upgrade_menu", id(self.background_image), size)
+        if key not in self.scaled_cache:
+            self.scaled_cache[key] = pygame.transform.scale(self.background_image, size)
+        return self.scaled_cache[key]
+
+    def scaled_card_surface(self, size):
+        if not self.card_image:
+            return None
+        key = ("upgrade_card", id(self.card_image), size)
+        if key not in self.scaled_cache:
+            self.scaled_cache[key] = pygame.transform.scale(self.card_image, size)
+        return self.scaled_cache[key]
+
+    def update(self, surface, dt, mouse_pos):
+        if self.phase == "closed":
+            return None
+
+        self.ensure_cards(surface)
+        self.phase_age += dt
+
+        if self.phase == "fade_out":
+            if self.phase_age >= UPGRADE_TRANSITION_OUT_SECONDS:
+                self.phase = "fade_in"
+                self.phase_age = 0.0
+            return None
+
+        for card in self.cards:
+            card.update(dt, mouse_pos, self.selected_index, self.selection_age)
+
+        if self.phase == "fade_in":
+            if self.phase_age >= UPGRADE_MENU_FADE_SECONDS:
+                self.phase = "menu"
+                self.phase_age = 0.0
+            return None
+
+        if self.phase == "selecting":
+            self.selection_age += dt
+            if self.selection_age >= UPGRADE_SELECT_ANIMATION_SECONDS:
+                self.phase = "closing"
+                self.phase_age = 0.0
+            return None
+
+        if self.phase == "closing":
+            if self.phase_age >= UPGRADE_CLOSE_FADE_SECONDS:
+                self.finished_index = self.selected_index
+                self.phase = "closed"
+                return self.finished_index
+
+        return None
+
+    def select_index(self, index):
+        if not self.is_interactive() or not (0 <= index < len(self.cards)):
+            return False
+        self.selected_index = index
+        self.selection_age = 0.0
+        self.phase = "selecting"
+        self.phase_age = 0.0
+        return True
+
+    def handle_click(self, mouse_pos):
+        if not self.is_interactive():
+            return False
+        for card in self.cards:
+            if card.display_rect().collidepoint(mouse_pos):
+                return self.select_index(card.index)
+        return False
+
+    def draw(self, surface):
+        if self.phase == "closed":
+            return
+
+        if self.phase == "fade_out":
+            self.draw_gameplay_snapshot(surface)
+            progress = smooth_progress(self.phase_age / UPGRADE_TRANSITION_OUT_SECONDS)
+            self.draw_black_overlay(surface, round(progress * 255))
+            return
+
+        surface.fill((8, 16, 15))
+        menu_rect = self.menu_rect(surface)
+        menu_alpha = 255
+        if self.phase == "fade_in":
+            menu_alpha = round(smooth_progress(self.phase_age / UPGRADE_MENU_FADE_SECONDS) * 255)
+
+        menu_surface = self.scaled_menu_surface(menu_rect.size)
+        if menu_surface:
+            menu_to_draw = menu_surface.copy()
+            menu_to_draw.set_alpha(menu_alpha)
+            surface.blit(menu_to_draw, menu_rect)
+        else:
+            pygame.draw.rect(surface, (20, 31, 30), surface.get_rect())
+
+        for card in self.cards:
+            card.draw(surface, self, menu_alpha, self.selected_index, self.selection_age)
+
+        if self.phase == "closing":
+            progress = smooth_progress(self.phase_age / UPGRADE_CLOSE_FADE_SECONDS)
+            self.draw_black_overlay(surface, round(progress * 255))
+
+        if DEBUG_UPGRADE_UI_RECTS:
+            pygame.draw.rect(surface, (255, 80, 80), menu_rect, 2)
+            for slot in UPGRADE_CARD_SLOTS:
+                pygame.draw.rect(surface, (120, 255, 120), self.design_rect_to_screen(surface, slot), 2)
+
+    def draw_gameplay_snapshot(self, surface):
+        if self.gameplay_snapshot:
+            snapshot = self.gameplay_snapshot
+            if snapshot.get_size() != surface.get_size():
+                snapshot = pygame.transform.scale(snapshot, surface.get_size())
+            surface.blit(snapshot, (0, 0))
+        else:
+            surface.fill((7, 11, 10))
+
+    def draw_black_overlay(self, surface, alpha):
+        if alpha <= 0:
+            return
+        overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, clamp(alpha, 0, 255)))
+        surface.blit(overlay, (0, 0))
+
+    def icon_surface(self, effect_id, size):
+        icon_type = UPGRADE_EFFECT_ICONS.get(effect_id, "bullet")
+        key = (icon_type, size)
+        if key in self.icon_cache:
+            return self.icon_cache[key]
+
+        base = pygame.Surface((24, 24), pygame.SRCALPHA)
+        self.draw_icon_pixels(base, icon_type)
+        icon = pygame.transform.scale(base, (size, size))
+        self.icon_cache[key] = icon
+        return icon
+
+    def draw_icon_pixels(self, surface, icon_type):
+        green = (145, 234, 93)
+        dark = (20, 31, 25)
+        red = (202, 43, 39)
+        cream = (228, 226, 182)
+        brass = (213, 165, 72)
+        brown = (118, 77, 43)
+
+        def rect(x, y, w, h, color):
+            pygame.draw.rect(surface, color, (x, y, w, h))
+
+        if icon_type == "heart":
+            for r in ((5, 5, 5, 5), (14, 5, 5, 5), (3, 9, 18, 6), (5, 15, 14, 4), (8, 19, 8, 3)):
+                rect(*r, red)
+            rect(7, 7, 3, 3, (255, 106, 92))
+        elif icon_type == "medkit":
+            rect(4, 7, 16, 12, cream)
+            rect(7, 4, 10, 3, cream)
+            rect(10, 9, 4, 8, red)
+            rect(8, 11, 8, 4, red)
+            pygame.draw.rect(surface, dark, (4, 7, 16, 12), 2)
+        elif icon_type == "boot":
+            rect(7, 5, 6, 10, brown)
+            rect(9, 13, 10, 4, brown)
+            rect(5, 17, 15, 3, dark)
+            rect(8, 6, 4, 3, (169, 111, 58))
+        elif icon_type == "spring":
+            points = [(7, 5), (17, 7), (7, 10), (17, 13), (7, 16), (17, 19)]
+            pygame.draw.lines(surface, green, False, points, 3)
+            rect(5, 20, 14, 2, dark)
+        elif icon_type == "trigger":
+            pygame.draw.circle(surface, green, (12, 12), 8, 2)
+            rect(11, 3, 2, 18, green)
+            rect(3, 11, 18, 2, green)
+            pygame.draw.circle(surface, cream, (12, 12), 2)
+        elif icon_type == "round":
+            rect(9, 3, 6, 15, brass)
+            rect(8, 17, 8, 3, (110, 74, 34))
+            rect(10, 5, 2, 9, (255, 214, 114))
+        else:
+            rect(5, 11, 13, 5, brass)
+            rect(17, 12, 3, 3, cream)
+            rect(3, 12, 3, 3, dark)
+
+
 class UI:
     def __init__(self):
         self.font = load_font()
         self.loading_screen_image = None
         self.title_image = None
         self.hotbar_image = None
+        self.weapon_icon_images = {"melee": None, "pistol": None}
         self.escape_menu_image = None
+        self.upgrade_menu_image = None
+        self.upgrade_card_image = None
+        self.upgrade_menu = UpgradeMenu()
         self.scaled_images = {}
 
     def load_loading_asset(self, asset_manager):
@@ -170,28 +712,73 @@ class UI:
     def load_game_ui_assets(self, asset_manager):
         self.load_hotbar_asset(asset_manager)
         self.load_escape_menu_asset(asset_manager)
+        self.load_upgrade_menu_assets(asset_manager)
 
     def load_hotbar_asset(self, asset_manager):
+        path = UI_IMAGE_PATHS["hotbar"]
+        needs_cleanup = not settings.is_preprocessed_image_path(path)
         self.hotbar_image = asset_manager.load_image(
             "ui_hotbar",
-            UI_IMAGE_PATHS["hotbar"],
-            remove_light_pixels=True,
-            remove_light_pixels_from_edges=True,
+            path,
+            remove_light_pixels=needs_cleanup,
+            remove_light_pixels_from_edges=needs_cleanup,
             trim_transparent=False,
             transparent_min_value=215,
             transparent_channel_spread=24,
         )
+        melee_icon_path = UI_IMAGE_PATHS["melee_icon"]
+        melee_icon_needs_cleanup = not settings.is_preprocessed_image_path(melee_icon_path)
+        self.weapon_icon_images["melee"] = asset_manager.load_image(
+            "ui_melee_icon",
+            melee_icon_path,
+            remove_light_pixels=melee_icon_needs_cleanup,
+            remove_light_pixels_from_edges=melee_icon_needs_cleanup,
+            trim_transparent=melee_icon_needs_cleanup,
+            transparent_min_value=210,
+            transparent_channel_spread=50,
+        )
+        pistol_icon_path = UI_IMAGE_PATHS["pistol_icon"]
+        pistol_icon_needs_cleanup = not settings.is_preprocessed_image_path(pistol_icon_path)
+        self.weapon_icon_images["pistol"] = asset_manager.load_image(
+            "ui_pistol_icon",
+            pistol_icon_path,
+            remove_light_pixels=pistol_icon_needs_cleanup,
+            remove_light_pixels_from_edges=pistol_icon_needs_cleanup,
+            trim_transparent=pistol_icon_needs_cleanup,
+            transparent_min_value=210,
+            transparent_channel_spread=50,
+        )
 
     def load_escape_menu_asset(self, asset_manager):
+        path = UI_IMAGE_PATHS["escape_menu"]
+        needs_cleanup = not settings.is_preprocessed_image_path(path)
         self.escape_menu_image = asset_manager.load_image(
             "ui_escape_menu",
-            UI_IMAGE_PATHS["escape_menu"],
-            remove_light_pixels=True,
-            remove_light_pixels_from_edges=True,
-            trim_transparent=True,
+            path,
+            remove_light_pixels=needs_cleanup,
+            remove_light_pixels_from_edges=needs_cleanup,
+            trim_transparent=needs_cleanup,
             transparent_min_value=215,
             transparent_channel_spread=24,
         )
+
+    def load_upgrade_menu_assets(self, asset_manager):
+        self.upgrade_menu_image = asset_manager.load_image(
+            "ui_upgrade_menu",
+            UI_IMAGE_PATHS["upgrade_menu"],
+        )
+        card_path = UI_IMAGE_PATHS["upgrade_card"]
+        card_needs_cleanup = not settings.is_preprocessed_image_path(card_path)
+        self.upgrade_card_image = asset_manager.load_image(
+            "ui_upgrade_card",
+            card_path,
+            remove_light_pixels=card_needs_cleanup,
+            remove_light_pixels_from_edges=card_needs_cleanup,
+            trim_transparent=card_needs_cleanup,
+            transparent_min_value=215,
+            transparent_channel_spread=30,
+        )
+        self.upgrade_menu.set_assets(self.upgrade_menu_image, self.upgrade_card_image)
 
     def load_ui_assets(self, asset_manager):
         self.load_loading_asset(asset_manager)
@@ -202,6 +789,30 @@ class UI:
         for size in (20, 22, 24, 28, 30, 34, 36, 40, 48, 54, 64, 72, 82, 104, 112):
             load_font("ui", size, bold=True)
         load_font("ui", 24, bold=False)
+
+    def open_upgrade_menu(self, choices, gameplay_snapshot=None):
+        self.upgrade_menu.open(choices, gameplay_snapshot)
+
+    def reset_upgrade_menu(self):
+        self.upgrade_menu.reset()
+
+    def update_upgrade_menu(self, surface, dt, mouse_pos):
+        return self.upgrade_menu.update(surface, dt, mouse_pos)
+
+    def draw_upgrade_menu(self, surface):
+        self.upgrade_menu.draw(surface)
+
+    def handle_upgrade_menu_click(self, mouse_pos):
+        return self.upgrade_menu.handle_click(mouse_pos)
+
+    def select_upgrade_card(self, index):
+        return self.upgrade_menu.select_index(index)
+
+    def upgrade_menu_wants_cursor(self, mouse_pos):
+        return (
+            self.upgrade_menu.is_interactive()
+            and any(card.display_rect().collidepoint(mouse_pos) for card in self.upgrade_menu.cards)
+        )
 
     def scaled_image(self, cache_name, image, target_size):
         if image is None:
@@ -423,9 +1034,43 @@ class UI:
             ROUND_TEXT_HEIGHT,
         )
 
+    def hotbar_weapon_icon_rect(self, surface, weapon):
+        center_x = MELEE_ICON_X if weapon == "melee" else PISTOL_ICON_X
+        center = self.hotbar_design_point(surface, center_x, WEAPON_ICON_Y)
+        size = round(WEAPON_ICON_SIZE * self.hotbar_scale(surface))
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = center
+        return rect
+
+    def hotbar_weapon_mode_rect(self, surface):
+        center = self.hotbar_design_point(surface, MELEE_ICON_X, WEAPON_ICON_Y)
+        size = round(WEAPON_ICON_SIZE * self.hotbar_scale(surface))
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = center
+        return rect
+
+    def build_round_mode_icon(self):
+        icon = pygame.Surface((32, 32), pygame.SRCALPHA)
+        brass = (213, 165, 72)
+        brass_light = (245, 208, 120)
+        brown = (118, 77, 43)
+        dark = (38, 28, 18)
+        pygame.draw.rect(icon, dark, (12, 2, 8, 26))
+        pygame.draw.rect(icon, brass, (13, 3, 6, 21))
+        pygame.draw.rect(icon, brass_light, (14, 5, 2, 15))
+        pygame.draw.rect(icon, brown, (11, 23, 10, 5))
+        return icon
+
+    def weapon_mode_icon(self, weapon):
+        if weapon == "melee":
+            return self.weapon_icon_images.get("melee")
+        return self.build_round_mode_icon()
+
     def handle_hotbar_click(self, surface, mouse_pos):
         if self.hotbar_menu_button_rect(surface).collidepoint(mouse_pos):
             return "menu"
+        if self.hotbar_weapon_mode_rect(surface).collidepoint(mouse_pos):
+            return "toggle_weapon"
         if self.hotbar_visible_rect(surface).collidepoint(mouse_pos):
             return "hud"
         return None
@@ -465,6 +1110,7 @@ class UI:
             pygame.draw.rect(fallback, (238, 232, 195), fallback.get_rect(), 3, border_radius=8)
             surface.blit(fallback, fallback_rect)
 
+        self.draw_hotbar_weapon_icons(surface, player)
         self.draw_hotbar_health(surface, player)
         self.draw_hotbar_ammo(surface, player, now)
         self.draw_hotbar_round(surface, level_number, level_total)
@@ -479,8 +1125,47 @@ class UI:
                 (self.hotbar_ammo_rect(surface), (255, 210, 70)),
                 (self.hotbar_round_rect(surface), (70, 180, 255)),
                 (self.hotbar_menu_button_rect(surface), (120, 255, 120)),
+                (self.hotbar_weapon_mode_rect(surface), (255, 210, 70)),
             ):
                 pygame.draw.rect(surface, color, rect, 2)
+
+    def draw_hotbar_weapon_icons(self, surface, player):
+        current_weapon = getattr(player, "current_weapon", "pistol")
+        scale = self.hotbar_scale(surface)
+        rect = self.hotbar_weapon_mode_rect(surface)
+        selector_rect = rect.inflate(round(10 * scale), round(10 * scale))
+        selector = pygame.Surface(selector_rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(
+            selector,
+            (238, 232, 195, 50),
+            selector.get_rect(),
+            border_radius=max(3, round(4 * scale)),
+        )
+        pygame.draw.rect(
+            selector,
+            (238, 232, 195, 230),
+            selector.get_rect(),
+            max(2, round(3 * scale)),
+            border_radius=max(3, round(4 * scale)),
+        )
+        surface.blit(selector, selector_rect)
+
+        icon = self.weapon_mode_icon(current_weapon)
+        if not icon:
+            return
+
+        padding = max(2, round(5 * scale))
+        target_rect = rect.inflate(-padding * 2, -padding * 2)
+        fit_scale = min(
+            target_rect.width / icon.get_width(),
+            target_rect.height / icon.get_height(),
+        )
+        target_size = (
+            max(1, round(icon.get_width() * fit_scale)),
+            max(1, round(icon.get_height() * fit_scale)),
+        )
+        scaled_icon = self.pixel_scaled_image(f"weapon_mode_{current_weapon}", icon, target_size)
+        surface.blit(scaled_icon, scaled_icon.get_rect(center=target_rect.center))
 
     def draw_hotbar_health(self, surface, player):
         health_rect = self.hotbar_health_rect(surface).inflate(-6, -6)
@@ -506,9 +1191,12 @@ class UI:
 
     def draw_hotbar_ammo(self, surface, player, now):
         ammo_rect = self.hotbar_ammo_rect(surface).inflate(-8, -6)
-        ammo_text = f"{player.current_ammo_in_gun} / {player.reserve_ammo}"
-        if player.is_reloading(now):
+        if getattr(player, "current_weapon", "pistol") == "melee":
+            ammo_text = "∞"
+        elif player.is_reloading(now):
             ammo_text = "Reloading"
+        else:
+            ammo_text = f"{player.current_ammo_in_gun} / {player.reserve_ammo}"
         self.draw_outlined_text(
             surface,
             ammo_text,
@@ -566,10 +1254,13 @@ class UI:
             pygame.draw.line(surface, line_color, start, end, line_width)
 
     def draw_ammo(self, surface, player, x, y):
-        ammo_text = f"Ammo: {player.current_ammo_in_gun} / {player.reserve_ammo}"
+        if getattr(player, "current_weapon", "pistol") == "melee":
+            ammo_text = "Ammo: ∞"
+        else:
+            ammo_text = f"Ammo: {player.current_ammo_in_gun} / {player.reserve_ammo}"
         self.draw_text(surface, ammo_text, x, y, size=44, bold=True)
         now = pygame.time.get_ticks() / 1000
-        if player.is_reloading(now):
+        if getattr(player, "current_weapon", "pistol") == "pistol" and player.is_reloading(now):
             self.draw_text(surface, "Reloading", x, y + 48, size=32, bold=True)
 
     def draw_upgrade_list(self, surface, player, x, y):
@@ -840,9 +1531,11 @@ class UI:
 
         return panel_surface
 
-    def pause_button_label(self, action, show_fps_counter=False):
+    def pause_button_label(self, action, show_fps_counter=False, windowed_fullscreen=False):
         if action == "resume":
             return "Resume"
+        if action == "windowed_fullscreen":
+            return f"Windowed Fullscreen: {'ON' if windowed_fullscreen else 'OFF'}"
         if action == "fps":
             return f"FPS Counter: {'ON' if show_fps_counter else 'OFF'}"
         if action == "debug":
@@ -858,6 +1551,7 @@ class UI:
         surface,
         player=None,
         show_fps_counter=False,
+        windowed_fullscreen=False,
         mouse_pos=(0, 0),
         now=0.0,
         opened_at=0.0,
@@ -870,6 +1564,7 @@ class UI:
             now=now,
             opened_at=opened_at,
             show_fps_counter=show_fps_counter,
+            windowed_fullscreen=windowed_fullscreen,
             pressed_action=pressed_action,
         )
 
@@ -881,6 +1576,7 @@ class UI:
         now=0.0,
         opened_at=0.0,
         show_fps_counter=False,
+        windowed_fullscreen=False,
         pressed_action=None,
     ):
         dim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -952,7 +1648,7 @@ class UI:
                 )
                 surface.blit(button_surface, rect)
 
-            label = self.pause_button_label(action, show_fps_counter)
+            label = self.pause_button_label(action, show_fps_counter, windowed_fullscreen)
             text_color = (238, 232, 195)
             if action == "quit":
                 text_color = (232, 168, 142)
@@ -989,18 +1685,12 @@ class UI:
         self.draw_text(surface, "Press R to restart", 510, 340, size=28)
 
     def draw_upgrade_screen(self, surface, upgrades):
-        surface.fill(COLOR_BACKGROUND)
-        self.draw_text(surface, "Choose an Upgrade", SCREEN_WIDTH // 2 - 360, 80, size=72, bold=True)
-        card_width = 440
-        card_height = 260
-        spacing = 60
-        total_width = len(upgrades) * card_width + (len(upgrades) - 1) * spacing
-        x_start = (SCREEN_WIDTH - total_width) // 2
-        y = 220
-        for index, upgrade in enumerate(upgrades):
-            x = x_start + index * (card_width + spacing)
-            rect = pygame.Rect(x, y, card_width, card_height)
-            pygame.draw.rect(surface, COLOR_UI_BG, rect)
-            pygame.draw.rect(surface, COLOR_TEXT, rect, 4)
-            self.draw_text(surface, f"{index + 1}. {upgrade['name']}", x + 18, y + 18, size=38, bold=True)
-            self.draw_text(surface, upgrade["description"], x + 18, y + 80, size=32)
+        if not self.upgrade_menu.is_open():
+            self.upgrade_menu.open(upgrades)
+            self.upgrade_menu.phase = "menu"
+            self.upgrade_menu.phase_age = 0.0
+            self.upgrade_menu.ensure_cards(surface)
+            for card in self.upgrade_menu.cards:
+                card.age = card.delay + UPGRADE_CARD_FALL_DURATION
+                card.current_rect = card.target_rect.copy()
+        self.upgrade_menu.draw(surface)

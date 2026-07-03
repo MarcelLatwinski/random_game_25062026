@@ -12,6 +12,8 @@ MAX_REPEATING_PLATFORM_TILE_WIDTH = 640
 
 class Platform:
     _scaled_surface_cache = {}
+    _opaque_top_padding_cache = {}
+    _opaque_bottom_padding_cache = {}
 
     def __init__(self, platform_data, platform_id):
         if isinstance(platform_data, dict):
@@ -23,22 +25,57 @@ class Platform:
             )
             self.sprite_key = platform_data.get("sprite")
             self.visual_height = platform_data.get("visual_height")
+            self.visual_width = platform_data.get("visual_width")
+            self.visual_x_offset = int(platform_data.get("visual_x_offset", 0))
+            self.visual_y_offset = int(platform_data.get("visual_y_offset", 0))
+            self.visual_bottom_offset = int(platform_data.get("visual_bottom_offset", 0))
+            self.align_visual_bottom = bool(platform_data.get("align_visual_bottom", False))
             self.section = platform_data.get("section")
             self.drop_through = bool(platform_data.get("drop_through", True))
+            collision_rects = platform_data.get("collision_rects")
         else:
             rect = platform_data
             self.sprite_key = None
             self.visual_height = None
+            self.visual_width = None
+            self.visual_x_offset = 0
+            self.visual_y_offset = 0
+            self.visual_bottom_offset = 0
+            self.align_visual_bottom = False
             self.section = None
             self.drop_through = True
+            collision_rects = None
 
         self.rect = pygame.Rect(rect)
+        self.collision_rects = self.build_collision_rects(collision_rects)
         self.id = platform_id
         self.color = COLOR_PLATFORM
         self.outline_color = COLOR_PLATFORM_OUTLINE
         self._scaled_image = None
         self._scaled_source_id = None
         self._scaled_size = None
+
+    def build_collision_rects(self, collision_rects):
+        if not collision_rects:
+            return (self.rect,)
+
+        rects = []
+        for collision_rect in collision_rects:
+            if len(collision_rect) != 4:
+                continue
+            x, y, width, height = collision_rect
+            rect = pygame.Rect(
+                self.rect.left + int(x),
+                self.rect.top + int(y),
+                int(width),
+                int(height),
+            )
+            if rect.width > 0 and rect.height > 0:
+                rects.append(rect)
+        return tuple(rects) if rects else (self.rect,)
+
+    def solid_rects(self):
+        return self.collision_rects
 
     def is_near_camera(self, camera_x, screen_width, margin=DRAW_MARGIN):
         return (
@@ -63,7 +100,7 @@ class Platform:
         if source_width <= 0 or source_height <= 0:
             return (self.rect.width, max_visual_height)
 
-        target_width = self.rect.width
+        target_width = self.visual_width or self.rect.width
         if self.uses_repeated_tiles():
             target_width = min(MAX_REPEATING_PLATFORM_TILE_WIDTH, self.rect.width)
 
@@ -78,8 +115,29 @@ class Platform:
 
     def image_draw_rect(self, draw_rect, scaled):
         if self.uses_repeated_tiles():
-            return pygame.Rect(draw_rect.left, draw_rect.top, self.rect.width, scaled.get_height())
-        return pygame.Rect(draw_rect.left, draw_rect.top, scaled.get_width(), scaled.get_height())
+            top_padding = self.scaled_opaque_top_padding(scaled)
+            return pygame.Rect(
+                draw_rect.left,
+                draw_rect.top - top_padding + self.visual_y_offset,
+                self.rect.width,
+                scaled.get_height(),
+            )
+        if self.align_visual_bottom:
+            bottom_padding = self.scaled_opaque_bottom_padding(scaled)
+            anchor_bottom = draw_rect.bottom + self.visual_bottom_offset
+            return pygame.Rect(
+                draw_rect.left + self.visual_x_offset,
+                anchor_bottom - scaled.get_height() + bottom_padding + self.visual_y_offset,
+                scaled.get_width(),
+                scaled.get_height(),
+            )
+        top_padding = self.scaled_opaque_top_padding(scaled)
+        return pygame.Rect(
+            draw_rect.left + self.visual_x_offset,
+            draw_rect.top - top_padding + self.visual_y_offset,
+            scaled.get_width(),
+            scaled.get_height(),
+        )
 
     def prepare_surface(self, image=None, images=None):
         platform_image = self.resolve_image(image=image, images=images)
@@ -107,8 +165,8 @@ class Platform:
                 self.blit_clipped(surface, scaled, image_rect)
 
             if DRAW_PLATFORM_COLLISION_MARKERS:
-                self.draw_visible_top_line(surface, draw_rect)
-        else:
+                self.draw_collision_rects(surface, camera_x)
+        elif DRAW_PLATFORM_COLLISION_MARKERS:
             self.draw_fallback_rect(surface, draw_rect)
 
     def blit_clipped(self, surface, image, image_rect, clip_rect=None):
@@ -161,6 +219,10 @@ class Platform:
             2,
         )
 
+    def draw_collision_rects(self, surface, camera_x=0):
+        for rect in self.solid_rects():
+            self.draw_visible_top_line(surface, rect.move(-camera_x, 0))
+
     def draw_fallback_rect(self, surface, draw_rect):
         visible = draw_rect.clip(surface.get_rect())
         if visible.width <= 0 or visible.height <= 0:
@@ -184,3 +246,43 @@ class Platform:
         self._scaled_source_id = source_id
         self._scaled_size = image_size
         return self._scaled_image
+
+    def scaled_opaque_top_padding(self, scaled_image):
+        if self._scaled_source_id is None:
+            return 0
+
+        cache_key = (
+            self._scaled_source_id,
+            scaled_image.get_width(),
+            scaled_image.get_height(),
+        )
+        source_top_padding = self._opaque_top_padding_cache.get(cache_key)
+        if source_top_padding is None:
+            source_bounds = scaled_image.get_bounding_rect(min_alpha=1)
+            if source_bounds.height <= 0:
+                source_top_padding = 0
+            else:
+                source_top_padding = max(0, source_bounds.top)
+            self._opaque_top_padding_cache[cache_key] = source_top_padding
+
+        return source_top_padding
+
+    def scaled_opaque_bottom_padding(self, scaled_image):
+        if self._scaled_source_id is None:
+            return 0
+
+        cache_key = (
+            self._scaled_source_id,
+            scaled_image.get_width(),
+            scaled_image.get_height(),
+        )
+        source_bottom_padding = self._opaque_bottom_padding_cache.get(cache_key)
+        if source_bottom_padding is None:
+            source_bounds = scaled_image.get_bounding_rect(min_alpha=1)
+            if source_bounds.height <= 0:
+                source_bottom_padding = 0
+            else:
+                source_bottom_padding = max(0, scaled_image.get_height() - source_bounds.bottom)
+            self._opaque_bottom_padding_cache[cache_key] = source_bottom_padding
+
+        return source_bottom_padding
